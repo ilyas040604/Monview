@@ -1,3 +1,4 @@
+
 package com.monview
 
 import android.Manifest
@@ -9,12 +10,22 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.core.app.ActivityCompat
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
 
-    private val permissionRequest = 1001
+    private val permissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { results ->
+
+            val allGranted = results.values.all { it }
+
+            if (allGranted) {
+                startMonitorService()
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -27,7 +38,9 @@ class MainActivity : ComponentActivity() {
 
         val start = Button(this).apply {
             text = "Aktifkan layanan pemantauan"
-            setOnClickListener { requestNeededPermissions() }
+            setOnClickListener {
+                requestNeededPermissions()
+            }
         }
 
         val layout = LinearLayout(this).apply {
@@ -56,31 +69,8 @@ class MainActivity : ComponentActivity() {
         }
 
         if (missing.isNotEmpty()) {
-            ActivityCompat.requestPermissions(
-                this,
-                missing.toTypedArray(),
-                permissionRequest
-            )
+            permissionLauncher.launch(missing.toTypedArray())
         } else {
-            startMonitorService()
-        }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(
-            requestCode, permissions, grantResults
-        )
-
-        if (requestCode == permissionRequest &&
-            grantResults.isNotEmpty() &&
-            grantResults.all {
-                it == PackageManager.PERMISSION_GRANTED
-            }
-        ) {
             startMonitorService()
         }
     }
