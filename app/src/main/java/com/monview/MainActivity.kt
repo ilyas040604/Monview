@@ -1,4 +1,3 @@
-
 package com.monview
 
 import android.Manifest
@@ -15,31 +14,45 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
 
+    private lateinit var status: TextView
+
     private val permissionLauncher =
         registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { results ->
-
-            val allGranted = results.values.all { it }
-
-            if (allGranted) {
+            if (results.isNotEmpty() && results.values.all { it }) {
                 startMonitorService()
+            } else {
+                status.text = "Izin belum lengkap. Mode Kamera belum dapat diaktifkan."
             }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val status = TextView(this).apply {
-            text = "MonView\nIzin kamera dan mikrofon diperlukan saat fitur digunakan."
-            textSize = 18f
-            setPadding(32, 48, 32, 32)
+        status = TextView(this).apply {
+            text = "MONVIEW\n\nPilih peran perangkat ini.\n\nMode Kamera: perangkat yang menyediakan kamera.\nMode Pemantau: perangkat untuk melihat kamera setelah fitur pairing tersedia."
+            textSize = 17f
+            setPadding(24, 32, 24, 24)
         }
 
-        val start = Button(this).apply {
-            text = "Aktifkan layanan pemantauan"
+        val cameraButton = Button(this).apply {
+            text = "Gunakan sebagai Mode Kamera"
+            setOnClickListener { requestCameraPermissions() }
+        }
+
+        val viewerButton = Button(this).apply {
+            text = "Gunakan sebagai Mode Pemantau"
             setOnClickListener {
-                requestNeededPermissions()
+                status.text = "Mode Pemantau dipilih. Fitur scan QR dan koneksi sedang dalam pengembangan."
+            }
+        }
+
+        val stopButton = Button(this).apply {
+            text = "Hentikan layanan"
+            setOnClickListener {
+                stopService(Intent(this@MainActivity, MonitorService::class.java))
+                status.text = "Layanan MonView dihentikan."
             }
         }
 
@@ -47,13 +60,15 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 24, 24, 24)
             addView(status)
-            addView(start)
+            addView(cameraButton)
+            addView(viewerButton)
+            addView(stopButton)
         }
 
         setContentView(layout)
     }
 
-    private fun requestNeededPermissions() {
+    private fun requestCameraPermissions() {
         val needed = mutableListOf(
             Manifest.permission.CAMERA,
             Manifest.permission.RECORD_AUDIO
@@ -78,5 +93,6 @@ class MainActivity : ComponentActivity() {
     private fun startMonitorService() {
         val intent = Intent(this, MonitorService::class.java)
         ContextCompat.startForegroundService(this, intent)
+        status.text = "Mode Kamera dipilih. Layanan dasar aktif; streaming kamera belum tersedia."
     }
 }
