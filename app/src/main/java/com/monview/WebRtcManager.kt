@@ -26,14 +26,16 @@ object WebRtcManager {
             .createPeerConnectionFactory()
     }
 
-    fun createPeerConnection(
-        observer: PeerConnection.Observer
-    ): PeerConnection? {
-        val currentFactory = factory
+    fun getFactory(): PeerConnectionFactory {
+        return factory
             ?: throw IllegalStateException(
                 "WebRTC belum diinisialisasi."
             )
+    }
 
+    fun createPeerConnection(
+        observer: PeerConnection.Observer
+    ): PeerConnection? {
         val iceServers = listOf(
             PeerConnection.IceServer.builder(
                 "stun:stun.l.google.com:19302"
@@ -43,7 +45,7 @@ object WebRtcManager {
         val configuration =
             PeerConnection.RTCConfiguration(iceServers)
 
-        return currentFactory.createPeerConnection(
+        return getFactory().createPeerConnection(
             configuration,
             observer
         )
