@@ -22,7 +22,8 @@ android {
     }
 }
 
-dependencies {
+dependencies 
+implementation("com.google.firebase:firebase-auth"){
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.core:core-ktx:1.16.0")
 
