@@ -1,3 +1,4 @@
+
 package com.monview
 
 import android.Manifest
@@ -5,7 +6,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -15,6 +18,7 @@ import androidx.core.content.ContextCompat
 class MainActivity : ComponentActivity() {
 
     private lateinit var status: TextView
+    private lateinit var qrImage: ImageView
 
     private val permissionLauncher =
         registerForActivityResult(
@@ -34,6 +38,12 @@ class MainActivity : ComponentActivity() {
             text = "MONVIEW\n\nPilih peran perangkat."
             textSize = 17f
             setPadding(24, 32, 24, 24)
+            gravity = Gravity.CENTER
+        }
+
+        qrImage = ImageView(this).apply {
+            adjustViewBounds = true
+            visibility = ImageView.GONE
         }
 
         val cameraButton = Button(this).apply {
@@ -44,22 +54,29 @@ class MainActivity : ComponentActivity() {
         val viewerButton = Button(this).apply {
             text = "Gunakan sebagai Mode Pemantau"
             setOnClickListener {
-                status.text = "Mode Pemantau dipilih. Pemindaian QR belum tersedia."
+                qrImage.visibility = ImageView.GONE
+                status.text =
+                    "Mode Pemantau dipilih. Pemindaian QR belum tersedia."
             }
         }
 
         val stopButton = Button(this).apply {
             text = "Hentikan layanan"
             setOnClickListener {
-                stopService(Intent(this@MainActivity, MonitorService::class.java))
+                stopService(
+                    Intent(this@MainActivity, MonitorService::class.java)
+                )
+                qrImage.visibility = ImageView.GONE
                 status.text = "Layanan MonView dihentikan."
             }
         }
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
             setPadding(24, 24, 24, 24)
             addView(status)
+            addView(qrImage)
             addView(cameraButton)
             addView(viewerButton)
             addView(stopButton)
@@ -91,6 +108,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun createCameraSession() {
+        qrImage.visibility = ImageView.GONE
         status.text = "Menghubungkan ke Firebase..."
 
         FirebaseManager.login { success, message ->
@@ -103,7 +121,19 @@ class MainActivity : ComponentActivity() {
                 SessionManager.createSession { created, result ->
                     runOnUiThread {
                         if (created) {
-                            status.text = "Sesi kamera berhasil dibuat.\nKode sesi:\n$result\n\nBerlaku 60 detik."
+                            try {
+                                val bitmap = QrCodeGenerator.generate(result)
+                                qrImage.setImageBitmap(bitmap)
+                                qrImage.visibility = ImageView.VISIBLE
+
+                                status.text =
+                                    "Sesi kamera berhasil dibuat.\n" +
+                                    "Kode sesi:\n$result\n\n" +
+                                    "Berlaku 60 detik."
+                            } catch (e: Exception) {
+                                status.text =
+                                    "Sesi dibuat, tetapi QR gagal dibuat: ${e.message}"
+                            }
                         } else {
                             status.text = "Gagal membuat sesi: $result"
                         }
