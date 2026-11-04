@@ -33,4 +33,7 @@ dependencies {
 
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
+    // WebRTC untuk streaming video dan suara
+    implementation("io.github.webrtc-sdk:android:150.7871.04")
 }
