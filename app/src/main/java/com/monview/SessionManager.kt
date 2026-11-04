@@ -72,7 +72,7 @@ object SessionManager {
                     currentData: MutableData
                 ): Transaction.Result {
 
-                    if (!currentData.exists()) {
+                    if (currentData.value == null) {
                         return Transaction.abort()
                     }
 
