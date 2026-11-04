@@ -14,11 +14,24 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var status: TextView
     private lateinit var qrImage: ImageView
+
+    private val scannerLauncher =
+        registerForActivityResult(ScanContract()) { result ->
+            if (result.contents != null) {
+                status.text =
+                    "QR berhasil dipindai.\n\nIsi kode:\n${result.contents}\n\n" +
+                    "Penyambungan perangkat belum diaktifkan."
+            } else {
+                status.text = "Pemindaian QR dibatalkan."
+            }
+        }
 
     private val permissionLauncher =
         registerForActivityResult(
@@ -55,8 +68,15 @@ class MainActivity : ComponentActivity() {
             text = "Gunakan sebagai Mode Pemantau"
             setOnClickListener {
                 qrImage.visibility = ImageView.GONE
-                status.text =
-                    "Mode Pemantau dipilih. Pemindaian QR belum tersedia."
+
+                val options = ScanOptions().apply {
+                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    setPrompt("Arahkan kamera ke QR Code MonView")
+                    setBeepEnabled(false)
+                    setOrientationLocked(true)
+                }
+
+                scannerLauncher.launch(options)
             }
         }
 
@@ -132,7 +152,7 @@ class MainActivity : ComponentActivity() {
                                     "Berlaku 60 detik."
                             } catch (e: Exception) {
                                 status.text =
-                                    "Sesi dibuat, tetapi QR gagal dibuat: ${e.message}"
+                                    "QR gagal dibuat: ${e.message}"
                             }
                         } else {
                             status.text = "Gagal membuat sesi: $result"
