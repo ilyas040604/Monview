@@ -3,6 +3,9 @@ package com.monview
 
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ServerValue
+import com.google.firebase.database.ValueEventListener
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
 import java.security.SecureRandom
 
 object SessionManager {
@@ -60,24 +63,74 @@ object SessionManager {
                 return@login
             }
 
-            val updates = mapOf<String, Any>(
-                "viewerUid" to uid,
-                "joinedAt" to ServerValue.TIMESTAMP,
-                "status" to "connected"
-            )
+            val reference = database.getReference("sessions").child(code)
 
-            database.getReference("sessions")
-                .child(code)
-                .updateChildren(updates)
-                .addOnSuccessListener {
-                    onResult(true, "HP pemantau berhasil bergabung")
+            reference.get()
+                .addOnSuccessListener { snapshot ->
+                    val expiresAt =
+                        snapshot.child("expiresAt").getValue(Long::class.java) ?: 0L
+
+                    val viewerUid =
+                        snapshot.child("viewerUid").getValue(String::class.java)
+
+                    if (!snapshot.exists() ||
+                        expiresAt < System.currentTimeMillis() ||
+                        !viewerUid.isNullOrBlank()
+                    ) {
+                        onResult(false, "QR tidak valid, kedaluwarsa, atau sudah digunakan.")
+                        return@addOnSuccessListener
+                    }
+
+                    val updates = mapOf<String, Any>(
+                        "viewerUid" to uid,
+                        "joinedAt" to ServerValue.TIMESTAMP,
+                        "status" to "connected"
+                    )
+
+                    reference.updateChildren(updates)
+                        .addOnSuccessListener {
+                            onResult(true, "HP pemantau berhasil bergabung")
+                        }
+                        .addOnFailureListener {
+                            onResult(false, it.message ?: "Gagal bergabung")
+                        }
                 }
                 .addOnFailureListener {
-                    onResult(
-                        false,
-                        it.message ?: "Gagal bergabung. QR mungkin kedaluwarsa atau sudah digunakan."
-                    )
+                    onResult(false, it.message ?: "Gagal memeriksa sesi")
                 }
         }
+    }
+
+    fun listenForViewer(
+        code: String,
+        onJoined: (Boolean, String) -> Unit
+    ): ValueEventListener {
+        val reference = database.getReference("sessions/$code")
+
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val viewerUid =
+                    snapshot.child("viewerUid").getValue(String::class.java)
+
+                if (!viewerUid.isNullOrBlank()) {
+                    onJoined(true, "HP pemantau sudah bergabung")
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                onJoined(false, error.message)
+            }
+        }
+
+        reference.addValueEventListener(listener)
+        return listener
+    }
+
+    fun removeViewerListener(
+        code: String,
+        listener: ValueEventListener
+    ) {
+        database.getReference("sessions/$code")
+            .removeEventListener(listener)
     }
 }
