@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "406045887480",
+    "project_id": "monview-3eb52",
+    "storage_bucket": "monview-3eb52.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:406045887480:android:4ebddcedcdad268108e40d",
+        "android_client_info": {
+          "package_name": "com.monview"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCn0XRn4IwP0aYCfCCp3PiCien0PKNd3cQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
