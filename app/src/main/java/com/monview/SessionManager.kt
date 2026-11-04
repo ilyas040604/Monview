@@ -1,3 +1,4 @@
+
 package com.monview
 
 import com.google.firebase.database.FirebaseDatabase
@@ -43,6 +44,39 @@ object SessionManager {
                 }
                 .addOnFailureListener {
                     onResult(false, it.message ?: "Gagal membuat sesi")
+                }
+        }
+    }
+
+    fun joinSession(code: String, onResult: (Boolean, String) -> Unit) {
+        if (code.length != 24) {
+            onResult(false, "Kode QR tidak valid")
+            return
+        }
+
+        FirebaseManager.login { success, uid ->
+            if (!success || uid.isBlank()) {
+                onResult(false, "Login Firebase gagal")
+                return@login
+            }
+
+            val updates = mapOf<String, Any>(
+                "viewerUid" to uid,
+                "joinedAt" to ServerValue.TIMESTAMP,
+                "status" to "connected"
+            )
+
+            database.getReference("sessions")
+                .child(code)
+                .updateChildren(updates)
+                .addOnSuccessListener {
+                    onResult(true, "HP pemantau berhasil bergabung")
+                }
+                .addOnFailureListener {
+                    onResult(
+                        false,
+                        it.message ?: "Gagal bergabung. QR mungkin kedaluwarsa atau sudah digunakan."
+                    )
                 }
         }
     }
