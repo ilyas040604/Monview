@@ -24,12 +24,12 @@ class MainActivity : ComponentActivity() {
 
     private val scannerLauncher =
         registerForActivityResult(ScanContract()) { result ->
-            if (result.contents != null) {
-                status.text =
-                    "QR berhasil dipindai.\n\nIsi kode:\n${result.contents}\n\n" +
-                    "Penyambungan perangkat belum diaktifkan."
-            } else {
+            val code = result.contents
+
+            if (code.isNullOrBlank()) {
                 status.text = "Pemindaian QR dibatalkan."
+            } else {
+                joinCameraSession(code.trim())
             }
         }
 
@@ -61,7 +61,9 @@ class MainActivity : ComponentActivity() {
 
         val cameraButton = Button(this).apply {
             text = "Gunakan sebagai Mode Kamera"
-            setOnClickListener { requestCameraPermissions() }
+            setOnClickListener {
+                requestCameraPermissions()
+            }
         }
 
         val viewerButton = Button(this).apply {
@@ -158,6 +160,21 @@ class MainActivity : ComponentActivity() {
                             status.text = "Gagal membuat sesi: $result"
                         }
                     }
+                }
+            }
+        }
+    }
+
+    private fun joinCameraSession(code: String) {
+        status.text = "Memeriksa kode dan menghubungkan ke Firebase..."
+
+        SessionManager.joinSession(code) { success, message ->
+            runOnUiThread {
+                status.text = if (success) {
+                    "BERHASIL BERGABUNG!\n\n$message\n\n" +
+                    "Menunggu koneksi kamera..."
+                } else {
+                    "GAGAL BERGABUNG\n\n$message"
                 }
             }
         }
