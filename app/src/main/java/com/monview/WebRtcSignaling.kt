@@ -1,146 +1,265 @@
 
 package com.monview
 
-import android.Manifest
-import android.content.Context
-import android.content.pm.PackageManager
-import androidx.core.content.ContextCompat
-import org.webrtc.AudioSource
-import org.webrtc.AudioTrack
-import org.webrtc.Camera2Enumerator
-import org.webrtc.CameraVideoCapturer
-import org.webrtc.EglBase
-import org.webrtc.MediaConstraints
-import org.webrtc.SurfaceTextureHelper
-import org.webrtc.VideoSource
-import org.webrtc.VideoTrack
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
+import com.google.firebase.database.ChildEventListener
+import com.google.firebase.database.ServerValue
+import org.webrtc.IceCandidate
+import org.webrtc.SessionDescription
 
-class CameraStream(private val context: Context) {
+object WebRtcSignaling {
 
-    private var capturer: CameraVideoCapturer? = null
-    private var videoSource: VideoSource? = null
-    private var audioSource: AudioSource? = null
-    private var textureHelper: SurfaceTextureHelper? = null
-    private var eglBase: EglBase? = null
+    private val database = FirebaseDatabase.getInstance(
+        "https://monview-3eb52-default-rtdb.asia-southeast1.firebasedatabase.app/"
+    )
 
-    var videoTrack: VideoTrack? = null
-        private set
-
-    var audioTrack: AudioTrack? = null
-        private set
-
-    fun start(): Boolean {
-        if (videoTrack != null && audioTrack != null) return true
-
-        val cameraPermission = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.CAMERA
-        ) == PackageManager.PERMISSION_GRANTED
-
-        val audioPermission = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (!cameraPermission || !audioPermission) return false
-
-        return try {
-            WebRtcManager.initialize(context)
-            val factory = WebRtcManager.getFactory()
-            val enumerator = Camera2Enumerator(context)
-
-            val cameraName = enumerator.deviceNames.firstOrNull {
-                enumerator.isFrontFacing(it)
-            } ?: enumerator.deviceNames.firstOrNull() ?: return false
-
-            val camera = enumerator.createCapturer(cameraName, null)
-                ?: return false
-
-            val egl = EglBase.create()
-            val helper = SurfaceTextureHelper.create(
-                "MonViewCameraThread", egl.eglBaseContext
-            ) ?: throw IllegalStateException("Gagal menyiapkan kamera")
-
-            val video = factory.createVideoSource(false)
-            camera.initialize(helper, context, video.capturerObserver)
-            camera.startCapture(1280, 720, 24)
-
-            val videoMediaTrack = factory.createVideoTrack(
-                "monview_video", video
-            )
-
-            val audio = factory.createAudioSource(MediaConstraints())
-            val audioMediaTrack = factory.createAudioTrack(
-                "monview_audio", audio
-            )
-
-            capturer = camera
-            eglBase = egl
-            textureHelper = helper
-            videoSource = video
-            audioSource = audio
-            videoTrack = videoMediaTrack
-            audioTrack = audioMediaTrack
-
-            true
-        } catch (_: Exception) {
-            stop()
-            false
-        }
+    // PERINTAH GANTI KAMERA
+    fun requestCameraSwitch(
+        code: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        database.getReference("sessions/$code/cameraControl/switchRequest")
+            .setValue(ServerValue.TIMESTAMP)
+            .addOnSuccessListener {
+                onResult(true, "Perintah terkirim")
+            }
+            .addOnFailureListener {
+                onResult(false, it.message ?: "Gagal mengirim perintah")
+            }
     }
 
-    fun switchCamera(onResult: (Boolean, String) -> Unit) {
-        val activeCapturer = capturer
+    // MENDENGARKAN PERINTAH GANTI KAMERA
+    fun listenCameraSwitch(
+        code: String,
+        onRequest: (Long) -> Unit
+    ): ValueEventListener {
+        val reference =
+            database.getReference("sessions/$code/cameraControl/switchRequest")
 
-        if (activeCapturer == null) {
-            onResult(false, "Kamera belum aktif")
-            return
-        }
-
-        activeCapturer.switchCamera(
-            object : CameraVideoCapturer.CameraSwitchHandler {
-
-                override fun onCameraSwitchDone(isFrontCamera: Boolean) {
-                    onResult(
-                        true,
-                        if (isFrontCamera) {
-                            "Kamera depan aktif"
-                        } else {
-                            "Kamera belakang aktif"
-                        }
-                    )
-                }
-
-                override fun onCameraSwitchError(error: String) {
-                    onResult(false, error)
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val requestAt = snapshot.getValue(Long::class.java)
+                if (requestAt != null) {
+                    onRequest(requestAt)
                 }
             }
-        )
-    }
 
-    fun stop() {
-        try {
-            capturer?.stopCapture()
-        } catch (_: Exception) {
+            override fun onCancelled(error: DatabaseError) {}
         }
 
-        capturer?.dispose()
-        capturer = null
+        reference.addValueEventListener(listener)
+        return listener
+    }
 
-        videoTrack?.dispose()
-        videoTrack = null
+    // MENGHENTIKAN PENDENGAR PERINTAH KAMERA
+    fun removeCameraSwitchListener(
+        code: String,
+        listener: ValueEventListener
+    ) {
+        database.getReference("sessions/$code/cameraControl/switchRequest")
+            .removeEventListener(listener)
+    }
 
-        audioTrack?.dispose()
-        audioTrack = null
+    // MENGIRIM OFFER
+    fun sendOffer(
+        code: String,
+        offer: SessionDescription,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val data = mapOf(
+            "type" to offer.type.canonicalForm(),
+            "sdp" to offer.description
+        )
 
-        videoSource?.dispose()
-        videoSource = null
+        database.getReference("sessions/$code/signals/offer")
+            .setValue(data)
+            .addOnSuccessListener {
+                onResult(true, "Offer terkirim")
+            }
+            .addOnFailureListener {
+                onResult(false, it.message ?: "Offer gagal dikirim")
+            }
+    }
 
-        audioSource?.dispose()
-        audioSource = null
+    // MENDENGARKAN OFFER
+    fun listenOffer(
+        code: String,
+        onOffer: (SessionDescription?) -> Unit
+    ): ValueEventListener {
+        val reference =
+            database.getReference("sessions/$code/signals/offer")
 
-        textureHelper?.dispose()
-        textureHelper = null
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val type = snapshot.child("type").getValue(String::class.java)
+                val sdp = snapshot.child("sdp").getValue(String::class.java)
 
-        eglBase?.release()
-        eglBase = null
+                if (type != null && sdp != null) {
+                    onOffer(
+                        SessionDescription(
+                            SessionDescription.Type.fromCanonicalForm(type),
+                            sdp
+                        )
+                    )
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                onOffer(null)
+            }
+        }
+
+        reference.addValueEventListener(listener)
+        return listener
+    }
+
+    // MENGIRIM ANSWER
+    fun sendAnswer(
+        code: String,
+        answer: SessionDescription,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val data = mapOf(
+            "type" to answer.type.canonicalForm(),
+            "sdp" to answer.description
+        )
+
+        database.getReference("sessions/$code/signals/answer")
+            .setValue(data)
+            .addOnSuccessListener {
+                onResult(true, "Answer terkirim")
+            }
+            .addOnFailureListener {
+                onResult(false, it.message ?: "Answer gagal dikirim")
+            }
+    }
+
+    // MENDENGARKAN ANSWER
+    fun listenAnswer(
+        code: String,
+        onAnswer: (SessionDescription?) -> Unit
+    ): ValueEventListener {
+        val reference =
+            database.getReference("sessions/$code/signals/answer")
+
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val type = snapshot.child("type").getValue(String::class.java)
+                val sdp = snapshot.child("sdp").getValue(String::class.java)
+
+                if (type != null && sdp != null) {
+                    onAnswer(
+                        SessionDescription(
+                            SessionDescription.Type.fromCanonicalForm(type),
+                            sdp
+                        )
+                    )
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                onAnswer(null)
+            }
+        }
+
+        reference.addValueEventListener(listener)
+        return listener
+    }
+
+    // MENGIRIM ICE CANDIDATE
+    fun sendCandidate(
+        code: String,
+        candidate: IceCandidate,
+        isCamera: Boolean
+    ) {
+        val path = if (isCamera) "cameraCandidates" else "viewerCandidates"
+
+        val data = mapOf(
+            "sdpMid" to candidate.sdpMid,
+            "sdpMLineIndex" to candidate.sdpMLineIndex,
+            "sdp" to candidate.sdp,
+            "createdAt" to ServerValue.TIMESTAMP
+        )
+
+        database.getReference("sessions/$code/signals/$path")
+            .push()
+            .setValue(data)
+    }
+
+    // MENDENGARKAN ICE CANDIDATE
+    fun listenCandidates(
+        code: String,
+        isCamera: Boolean,
+        onCandidate: (IceCandidate) -> Unit
+    ): ChildEventListener {
+        val path = if (isCamera) "viewerCandidates" else "cameraCandidates"
+
+        val reference =
+            database.getReference("sessions/$code/signals/$path")
+
+        val listener = object : ChildEventListener {
+            override fun onChildAdded(
+                snapshot: DataSnapshot,
+                previousChildName: String?
+            ) {
+                val mid = snapshot.child("sdpMid").getValue(String::class.java)
+                val index = snapshot.child("sdpMLineIndex").getValue(Int::class.java)
+                val sdp = snapshot.child("sdp").getValue(String::class.java)
+
+                if (mid != null && index != null && sdp != null) {
+                    onCandidate(IceCandidate(mid, index, sdp))
+                }
+            }
+
+            override fun onChildChanged(
+                snapshot: DataSnapshot,
+                previousChildName: String?
+            ) {}
+
+            override fun onChildRemoved(snapshot: DataSnapshot) {}
+
+            override fun onChildMoved(
+                snapshot: DataSnapshot,
+                previousChildName: String?
+            ) {}
+
+            override fun onCancelled(error: DatabaseError) {}
+        }
+
+        reference.addChildEventListener(listener)
+        return listener
+    }
+
+    // MENGHAPUS LISTENER ANSWER
+    fun removeAnswerListener(
+        code: String,
+        listener: ValueEventListener
+    ) {
+        database.getReference("sessions/$code/signals/answer")
+            .removeEventListener(listener)
+    }
+
+    // MENGHAPUS LISTENER OFFER
+    fun removeOfferListener(
+        code: String,
+        listener: ValueEventListener
+    ) {
+        database.getReference("sessions/$code/signals/offer")
+            .removeEventListener(listener)
+    }
+
+    // MENGHAPUS LISTENER ICE CANDIDATE
+    fun removeCandidateListener(
+        code: String,
+        isCamera: Boolean,
+        listener: ChildEventListener
+    ) {
+        val path = if (isCamera) "viewerCandidates" else "cameraCandidates"
+
+        database.getReference("sessions/$code/signals/$path")
+            .removeEventListener(listener)
     }
 }
