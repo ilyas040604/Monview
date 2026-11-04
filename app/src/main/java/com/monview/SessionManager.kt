@@ -1,13 +1,12 @@
 package com.monview
 
+import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ServerValue
-import com.google.firebase.database.ktx.database
-import com.google.firebase.ktx.Firebase
 import java.security.SecureRandom
 
 object SessionManager {
 
-    private val database = Firebase.database(
+    private val database = FirebaseDatabase.getInstance(
         "https://monview-3eb52-default-rtdb.asia-southeast1.firebasedatabase.app/"
     )
 
@@ -20,9 +19,12 @@ object SessionManager {
                 return@login
             }
 
+            val characters =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
             val code = buildString {
                 repeat(24) {
-                    append("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[random.nextInt(62)])
+                    append(characters[random.nextInt(characters.length)])
                 }
             }
 
