@@ -32,67 +32,44 @@ class CameraStream(private val context: Context) {
     fun start(): Boolean {
         if (videoTrack != null && audioTrack != null) return true
 
-        val cameraPermission =
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED
+        val cameraPermission = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
 
-        val audioPermission =
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
+        val audioPermission = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
 
         if (!cameraPermission || !audioPermission) return false
 
         return try {
             WebRtcManager.initialize(context)
             val factory = WebRtcManager.getFactory()
-
             val enumerator = Camera2Enumerator(context)
 
-            val cameraName =
-                enumerator.deviceNames.firstOrNull {
-                    enumerator.isFrontFacing(it)
-                } ?: enumerator.deviceNames.firstOrNull()
-                    ?: return false
+            val cameraName = enumerator.deviceNames.firstOrNull {
+                enumerator.isFrontFacing(it)
+            } ?: enumerator.deviceNames.firstOrNull() ?: return false
 
-            val camera =
-                enumerator.createCapturer(cameraName, null)
-                    ?: return false
+            val camera = enumerator.createCapturer(cameraName, null)
+                ?: return false
 
             val egl = EglBase.create()
-
             val helper = SurfaceTextureHelper.create(
-                "MonViewCameraThread",
-                egl.eglBaseContext
-            ) ?: throw IllegalStateException(
-                "Gagal menyiapkan kamera"
-            )
+                "MonViewCameraThread", egl.eglBaseContext
+            ) ?: throw IllegalStateException("Gagal menyiapkan kamera")
 
             val video = factory.createVideoSource(false)
-
-            camera.initialize(
-                helper,
-                context,
-                video.capturerObserver
-            )
-
+            camera.initialize(helper, context, video.capturerObserver)
             camera.startCapture(1280, 720, 24)
 
             val videoMediaTrack = factory.createVideoTrack(
-                "monview_video",
-                video
+                "monview_video", video
             )
 
-            val audio = factory.createAudioSource(
-                MediaConstraints()
-            )
-
+            val audio = factory.createAudioSource(MediaConstraints())
             val audioMediaTrack = factory.createAudioTrack(
-                "monview_audio",
-                audio
+                "monview_audio", audio
             )
 
             capturer = camera
@@ -104,10 +81,39 @@ class CameraStream(private val context: Context) {
             audioTrack = audioMediaTrack
 
             true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             stop()
             false
         }
+    }
+
+    fun switchCamera(onResult: (Boolean, String) -> Unit) {
+        val activeCapturer = capturer
+
+        if (activeCapturer == null) {
+            onResult(false, "Kamera belum aktif")
+            return
+        }
+
+        activeCapturer.switchCamera(
+            object : CameraVideoCapturer.CameraSwitchHandler {
+
+                override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                    onResult(
+                        true,
+                        if (isFrontCamera) {
+                            "Kamera depan aktif"
+                        } else {
+                            "Kamera belakang aktif"
+                        }
+                    )
+                }
+
+                override fun onCameraSwitchError(error: String) {
+                    onResult(false, error)
+                }
+            }
+        )
     }
 
     fun stop() {
