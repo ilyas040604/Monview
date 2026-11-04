@@ -5,7 +5,6 @@ import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
-import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.ServerValue
 import org.webrtc.IceCandidate
@@ -124,11 +123,7 @@ object WebRtcSignaling {
         candidate: IceCandidate,
         isCamera: Boolean
     ) {
-        val path = if (isCamera) {
-            "cameraCandidates"
-        } else {
-            "viewerCandidates"
-        }
+        val path = if (isCamera) "cameraCandidates" else "viewerCandidates"
 
         val data = mapOf(
             "sdpMid" to candidate.sdpMid,
@@ -147,12 +142,7 @@ object WebRtcSignaling {
         isCamera: Boolean,
         onCandidate: (IceCandidate) -> Unit
     ): ChildEventListener {
-        val path = if (isCamera) {
-            "viewerCandidates"
-        } else {
-            "cameraCandidates"
-        }
-
+        val path = if (isCamera) "viewerCandidates" else "cameraCandidates"
         val reference =
             database.getReference("sessions/$code/signals/$path")
 
@@ -161,34 +151,49 @@ object WebRtcSignaling {
                 snapshot: DataSnapshot,
                 previousChildName: String?
             ) {
-                val mid = snapshot.child("sdpMid")
-                    .getValue(String::class.java)
-                val index = snapshot.child("sdpMLineIndex")
-                    .getValue(Int::class.java)
-                val sdp = snapshot.child("sdp")
-                    .getValue(String::class.java)
+                val mid = snapshot.child("sdpMid").getValue(String::class.java)
+                val index = snapshot.child("sdpMLineIndex").getValue(Int::class.java)
+                val sdp = snapshot.child("sdp").getValue(String::class.java)
 
                 if (mid != null && index != null && sdp != null) {
                     onCandidate(IceCandidate(mid, index, sdp))
                 }
             }
 
-            override fun onChildChanged(
-                snapshot: DataSnapshot,
-                previousChildName: String?
-            ) {}
-
+            override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {}
             override fun onChildRemoved(snapshot: DataSnapshot) {}
-
-            override fun onChildMoved(
-                snapshot: DataSnapshot,
-                previousChildName: String?
-            ) {}
-
+            override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
             override fun onCancelled(error: DatabaseError) {}
         }
 
         reference.addChildEventListener(listener)
         return listener
+    }
+
+    fun removeAnswerListener(
+        code: String,
+        listener: ValueEventListener
+    ) {
+        database.getReference("sessions/$code/signals/answer")
+            .removeEventListener(listener)
+    }
+
+    fun removeOfferListener(
+        code: String,
+        listener: ValueEventListener
+    ) {
+        database.getReference("sessions/$code/signals/offer")
+            .removeEventListener(listener)
+    }
+
+    fun removeCandidateListener(
+        code: String,
+        isCamera: Boolean,
+        listener: ChildEventListener
+    ) {
+        val path = if (isCamera) "viewerCandidates" else "cameraCandidates"
+
+        database.getReference("sessions/$code/signals/$path")
+            .removeEventListener(listener)
     }
 }
