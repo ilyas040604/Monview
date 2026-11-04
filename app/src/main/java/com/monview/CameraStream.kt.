@@ -6,9 +6,7 @@ import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.Camera2Enumerator
 import org.webrtc.CameraVideoCapturer
-import org.webrtc.EglBase
 import org.webrtc.MediaConstraints
-import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
@@ -19,6 +17,7 @@ class CameraStream(private val context: Context) {
     private var capturer: CameraVideoCapturer? = null
     private var videoSource: VideoSource? = null
     private var audioSource: AudioSource? = null
+    private var textureHelper: SurfaceTextureHelper? = null
 
     var videoTrack: VideoTrack? = null
         private set
@@ -26,19 +25,52 @@ class CameraStream(private val context: Context) {
     var audioTrack: AudioTrack? = null
         private set
 
-    private var textureHelper: SurfaceTextureHelper? = null
-
     fun start(): Boolean {
         WebRtcManager.initialize(context)
+        val factory = WebRtcManager.getFactory()
 
-        val factoryField = PeerConnectionFactory::class.java
-            .getDeclaredField("unused")
-        // Inisialisasi trek dilakukan pada langkah berikutnya.
+        val enumerator = Camera2Enumerator(context)
+        val cameraName = enumerator.deviceNames.firstOrNull {
+            enumerator.isFrontFacing(it)
+        } ?: enumerator.deviceNames.firstOrNull()
+            ?: return false
+
+        capturer = enumerator.createCapturer(cameraName, null)
+            ?: return false
+
+        textureHelper = SurfaceTextureHelper.create(
+            "MonViewCameraThread",
+            org.webrtc.EglBase.create().eglBaseContext
+        )
+
+        videoSource = factory.createVideoSource(false)
+        capturer!!.initialize(
+            textureHelper,
+            context,
+            videoSource!!.capturerObserver
+        )
+        capturer!!.startCapture(1280, 720, 24)
+
+        videoTrack = factory.createVideoTrack(
+            "monview_video",
+            videoSource
+        )
+
+        audioSource = factory.createAudioSource(MediaConstraints())
+        audioTrack = factory.createAudioTrack(
+            "monview_audio",
+            audioSource
+        )
+
         return true
     }
 
     fun stop() {
-        capturer?.stopCapture()
+        try {
+            capturer?.stopCapture()
+        } catch (_: InterruptedException) {
+        }
+
         capturer?.dispose()
         capturer = null
 
