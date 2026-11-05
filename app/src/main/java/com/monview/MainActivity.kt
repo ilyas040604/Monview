@@ -336,7 +336,7 @@ class MainActivity : ComponentActivity() {
                             activeCode = result
                             qrImage.setImageBitmap(QrCodeGenerator.generate(result))
                             qrImage.visibility = View.VISIBLE
-                            status.text = "MENUNGGU HP PEMANTAU\nQR berlaku selama 60 detik."
+                            status.text = "MENUNGGU HP PEMANTAU\nQR berlaku selama 5 menit."
 
                             viewerListener =
                                 SessionManager.listenForViewer(result) { joined, info ->
