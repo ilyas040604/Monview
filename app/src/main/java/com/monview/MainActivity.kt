@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import com.google.firebase.database.ValueEventListener
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import org.webrtc.AudioTrack
 import org.webrtc.EglBase
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
@@ -36,9 +37,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var remoteRenderer: SurfaceViewRenderer
     private lateinit var switchCameraButton: Button
     private lateinit var nightVisionButton: Button
+    private lateinit var audioButton: Button
 
     private var nightVisionSink: NightVisionVideoSink? = null
     private var nightVisionEnabled = false
+
+    private var remoteAudioTrack: AudioTrack? = null
+    private var audioEnabled = true
 
     private var eglBase: EglBase? = null
     private var cameraStream: CameraStream? = null
@@ -193,6 +198,28 @@ class MainActivity : ComponentActivity() {
                 visibility = View.GONE
             }
 
+        audioButton =
+            makeButton("SUARA HP: AKTIF", false) {
+                audioEnabled = !audioEnabled
+                remoteAudioTrack?.setEnabled(audioEnabled)
+
+                audioButton.text =
+                    if (audioEnabled) {
+                        "SUARA HP: AKTIF"
+                    } else {
+                        "SENYAP: AKTIF"
+                    }
+
+                status.text =
+                    if (audioEnabled) {
+                        "AUDIO AKTIF\nMendengarkan suara dari mikrofon HP kamera."
+                    } else {
+                        "MODE SENYAP AKTIF\nSuara dimatikan di HP pemantau."
+                    }
+            }.apply {
+                visibility = View.GONE
+            }
+
         val stopButton = makeButton("HENTIKAN KONEKSI", false) {
             stopCurrentSession()
             status.text = "KONEKSI DIHENTIKAN"
@@ -218,6 +245,7 @@ class MainActivity : ComponentActivity() {
         root.addView(viewerButton, matchWrap().apply { bottomMargin = dp(10) })
         root.addView(switchCameraButton, matchWrap().apply { bottomMargin = dp(10) })
         root.addView(nightVisionButton, matchWrap().apply { bottomMargin = dp(10) })
+        root.addView(audioButton, matchWrap().apply { bottomMargin = dp(10) })
         root.addView(stopButton, matchWrap())
 
         val scroll = ScrollView(this).apply {
@@ -384,14 +412,20 @@ class MainActivity : ComponentActivity() {
                 }
 
                 activeCode = code
+
                 nightVisionEnabled = false
                 nightVisionSink?.setNightVisionEnabled(false)
                 nightVisionButton.text = "NIGHT VISION: MATI"
                 nightVisionButton.visibility = View.VISIBLE
 
+                audioEnabled = true
+                remoteAudioTrack = null
+                audioButton.text = "SUARA HP: AKTIF"
+                audioButton.visibility = View.VISIBLE
+
                 remoteRenderer.visibility = View.VISIBLE
                 switchCameraButton.visibility = View.VISIBLE
-                status.text = "TERHUBUNG\nMenunggu video kamera..."
+                status.text = "TERHUBUNG\nMenunggu video dan audio kamera..."
 
                 try {
                     WebRtcManager.initialize(this)
@@ -409,6 +443,17 @@ class MainActivity : ComponentActivity() {
                         onStatus = { messageText ->
                             runOnUiThread {
                                 status.text = "STATUS KONEKSI\n$messageText"
+                            }
+                        },
+                        onRemoteAudioTrack = { track: AudioTrack ->
+                            runOnUiThread {
+                                remoteAudioTrack = track
+                                track.setEnabled(audioEnabled)
+                                status.text = if (audioEnabled) {
+                                    "AUDIO TERHUBUNG\nSuara HP kamera siap didengarkan."
+                                } else {
+                                    "MODE SENYAP AKTIF"
+                                }
                             }
                         }
                     )
@@ -435,6 +480,10 @@ class MainActivity : ComponentActivity() {
         }
         cameraSwitchListener = null
 
+        remoteAudioTrack?.setEnabled(false)
+        remoteAudioTrack = null
+        audioEnabled = true
+
         webRtcSession?.stop()
         webRtcSession = null
         cameraStream?.stop()
@@ -450,6 +499,11 @@ class MainActivity : ComponentActivity() {
         if (::nightVisionButton.isInitialized) {
             nightVisionButton.text = "NIGHT VISION: MATI"
             nightVisionButton.visibility = View.GONE
+        }
+
+        if (::audioButton.isInitialized) {
+            audioButton.text = "SUARA HP: AKTIF"
+            audioButton.visibility = View.GONE
         }
 
         if (::switchCameraButton.isInitialized) {
