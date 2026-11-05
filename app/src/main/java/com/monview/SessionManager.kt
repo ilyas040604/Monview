@@ -1,3 +1,4 @@
+
 package com.monview
 
 import com.google.firebase.database.FirebaseDatabase
@@ -7,6 +8,7 @@ import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.MutableData
 import com.google.firebase.database.Transaction
+import com.google.firebase.database.DatabaseReference
 import java.security.SecureRandom
 
 object SessionManager {
@@ -16,6 +18,7 @@ object SessionManager {
     )
 
     private val random = SecureRandom()
+    private const val SESSION_LIFETIME_MS = 300_000L
 
     fun createSession(onResult: (Boolean, String) -> Unit) {
         FirebaseManager.login { success, uid ->
@@ -36,25 +39,24 @@ object SessionManager {
             val data = mapOf(
                 "owner" to uid,
                 "createdAt" to ServerValue.TIMESTAMP,
-                "expiresAt" to System.currentTimeMillis() + 60_000,
+                "expiresAt" to System.currentTimeMillis() + SESSION_LIFETIME_MS,
                 "status" to "waiting"
             )
 
-            database.getReference("sessions")
-                .child(code)
+            database.getReference("sessions").child(code)
                 .setValue(data)
                 .addOnSuccessListener {
                     onResult(true, code)
                 }
                 .addOnFailureListener {
-                    onResult(false, it.message ?: "Gagal membuat sesi")
+                    onResult(false, it.message ?: "Gagal membuat QR")
                 }
         }
     }
 
     fun joinSession(code: String, onResult: (Boolean, String) -> Unit) {
         if (!Regex("^[A-Za-z0-9]{24}$").matches(code)) {
-            onResult(false, "Kode QR tidak valid")
+            onResult(false, "Format QR tidak valid")
             return
         }
 
@@ -66,64 +68,121 @@ object SessionManager {
 
             val reference = database.getReference("sessions").child(code)
 
-            reference.runTransaction(object : Transaction.Handler {
-
-                override fun doTransaction(
-                    currentData: MutableData
-                ): Transaction.Result {
-
-                    if (currentData.value == null) {
-                        return Transaction.abort()
+            reference.get()
+                .addOnSuccessListener { snapshot ->
+                    if (!snapshot.exists()) {
+                        onResult(false, "Sesi QR tidak ditemukan. Buat QR baru.")
+                        return@addOnSuccessListener
                     }
 
-                    val expiresAt =
-                        currentData.child("expiresAt")
-                            .getValue(Long::class.java) ?: 0L
+                    val owner = snapshot.child("owner")
+                        .getValue(String::class.java)
 
-                    val owner =
-                        currentData.child("owner")
-                            .getValue(String::class.java)
+                    val viewerUid = snapshot.child("viewerUid")
+                        .getValue(String::class.java)
 
-                    val viewerUid =
-                        currentData.child("viewerUid")
-                            .getValue(String::class.java)
+                    val expiresAt = (snapshot.child("expiresAt").value as? Number)
+                        ?.toLong() ?: 0L
 
-                    if (expiresAt <= System.currentTimeMillis() ||
-                        !viewerUid.isNullOrBlank() ||
-                        owner == uid
-                    ) {
-                        return Transaction.abort()
-                    }
-
-                    currentData.child("viewerUid").value = uid
-                    currentData.child("joinedAt").value =
-                        System.currentTimeMillis()
-                    currentData.child("status").value = "connected"
-
-                    return Transaction.success(currentData)
-                }
-
-                override fun onComplete(
-                    error: DatabaseError?,
-                    committed: Boolean,
-                    currentData: DataSnapshot?
-                ) {
                     when {
-                        error != null ->
-                            onResult(false, error.message)
+                        owner.isNullOrBlank() ->
+                            onResult(false, "Data pemilik QR tidak lengkap.")
 
-                        committed ->
-                            onResult(true, "HP pemantau berhasil bergabung")
+                        owner == uid ->
+                            onResult(false, "Kedua HP menggunakan akun Firebase yang sama.")
+
+                        !viewerUid.isNullOrBlank() ->
+                            onResult(false, "QR sudah dipakai. Buat QR baru.")
+
+                        expiresAt == 0L ->
+                            onResult(false, "Waktu QR tidak valid.")
+
+                        expiresAt <= System.currentTimeMillis() ->
+                            onResult(false, "QR kedaluwarsa. Buat QR baru.")
 
                         else ->
-                            onResult(
-                                false,
-                                "QR tidak valid, kedaluwarsa, atau sudah digunakan."
-                            )
+                            claimSession(reference, uid, onResult)
                     }
                 }
-            })
+                .addOnFailureListener {
+                    onResult(false, "Gagal membaca Firebase: ${it.message}")
+                }
         }
+    }
+
+    private fun claimSession(
+        reference: DatabaseReference,
+        uid: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        var rejectionReason = "QR sudah dipakai perangkat lain."
+
+        reference.runTransaction(object : Transaction.Handler {
+
+            override fun doTransaction(
+                currentData: MutableData
+            ): Transaction.Result {
+
+                if (currentData.value == null) {
+                    rejectionReason = "Sesi QR tidak ditemukan."
+                    return Transaction.abort()
+                }
+
+                val owner = currentData.child("owner")
+                    .getValue(String::class.java)
+
+                val viewerUid = currentData.child("viewerUid")
+                    .getValue(String::class.java)
+
+                val expiresAt = (currentData.child("expiresAt").value as? Number)
+                    ?.toLong() ?: 0L
+
+                when {
+                    owner == uid -> {
+                        rejectionReason = "Kedua HP memakai akun Firebase yang sama."
+                        return Transaction.abort()
+                    }
+
+                    !viewerUid.isNullOrBlank() -> {
+                        rejectionReason = "QR sudah dipakai. Buat QR baru."
+                        return Transaction.abort()
+                    }
+
+                    expiresAt == 0L -> {
+                        rejectionReason = "Waktu QR tidak valid."
+                        return Transaction.abort()
+                    }
+
+                    expiresAt <= System.currentTimeMillis() -> {
+                        rejectionReason = "QR sudah kedaluwarsa."
+                        return Transaction.abort()
+                    }
+                }
+
+                currentData.child("viewerUid").value = uid
+                currentData.child("joinedAt").value = ServerValue.TIMESTAMP
+                currentData.child("status").value = "connected"
+
+                return Transaction.success(currentData)
+            }
+
+            override fun onComplete(
+                error: DatabaseError?,
+                committed: Boolean,
+                currentData: DataSnapshot?
+            ) {
+                when {
+                    error != null ->
+                        onResult(false, "Firebase menolak pairing: ${error.message}")
+
+                    committed ->
+                        onResult(true, "HP pemantau berhasil bergabung.")
+
+                    else ->
+                        onResult(false, rejectionReason)
+                }
+            }
+        }, false)
     }
 
     fun listenForViewer(
@@ -136,9 +195,8 @@ object SessionManager {
         val listener = object : ValueEventListener {
 
             override fun onDataChange(snapshot: DataSnapshot) {
-                val viewerUid =
-                    snapshot.child("viewerUid")
-                        .getValue(String::class.java)
+                val viewerUid = snapshot.child("viewerUid")
+                    .getValue(String::class.java)
 
                 if (!viewerUid.isNullOrBlank()) {
                     onJoined(true, "HP pemantau sudah bergabung")
