@@ -20,22 +20,27 @@ object SessionManager {
     private val random = SecureRandom()
     private const val SESSION_LIFETIME_MS = 300_000L
 
+    // Membaca selisih waktu server Firebase menggunakan listener.
     private fun getServerOffset(
         onResult: (Boolean, Long) -> Unit
     ) {
         database.getReference(".info/serverTimeOffset")
-            .get()
-            .addOnSuccessListener { snapshot ->
-                val offset = (snapshot.value as? Number)?.toLong()
-                if (offset == null) {
-                    onResult(false, 0L)
-                } else {
-                    onResult(true, offset)
+            .addListenerForSingleValueEvent(object : ValueEventListener {
+
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val offset = (snapshot.value as? Number)?.toLong()
+
+                    if (offset == null) {
+                        onResult(false, 0L)
+                    } else {
+                        onResult(true, offset)
+                    }
                 }
-            }
-            .addOnFailureListener {
-                onResult(false, 0L)
-            }
+
+                override fun onCancelled(error: DatabaseError) {
+                    onResult(false, 0L)
+                }
+            })
     }
 
     fun createSession(onResult: (Boolean, String) -> Unit) {
