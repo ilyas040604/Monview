@@ -35,6 +35,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var qrImage: ImageView
     private lateinit var remoteRenderer: SurfaceViewRenderer
     private lateinit var switchCameraButton: Button
+    private lateinit var nightVisionButton: Button
+
+    private var nightVisionSink: NightVisionVideoSink? = null
+    private var nightVisionEnabled = false
 
     private var eglBase: EglBase? = null
     private var cameraStream: CameraStream? = null
@@ -123,6 +127,8 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(Color.BLACK)
         }
 
+        nightVisionSink = NightVisionVideoSink(remoteRenderer)
+
         val videoLabel = TextView(this).apply {
             text = "LIVE VIEW"
             textSize = 11f
@@ -165,6 +171,28 @@ class MainActivity : ComponentActivity() {
                 visibility = View.GONE
             }
 
+        nightVisionButton =
+            makeButton("NIGHT VISION: MATI", false) {
+                nightVisionEnabled = !nightVisionEnabled
+                nightVisionSink?.setNightVisionEnabled(nightVisionEnabled)
+
+                nightVisionButton.text =
+                    if (nightVisionEnabled) {
+                        "NIGHT VISION: AKTIF"
+                    } else {
+                        "NIGHT VISION: MATI"
+                    }
+
+                status.text =
+                    if (nightVisionEnabled) {
+                        "NIGHT VISION AKTIF\nVideo hitam putih dengan peningkatan kontras."
+                    } else {
+                        "NIGHT VISION NONAKTIF\nTampilan video kembali normal."
+                    }
+            }.apply {
+                visibility = View.GONE
+            }
+
         val stopButton = makeButton("HENTIKAN KONEKSI", false) {
             stopCurrentSession()
             status.text = "KONEKSI DIHENTIKAN"
@@ -189,6 +217,7 @@ class MainActivity : ComponentActivity() {
         root.addView(cameraButton, matchWrap().apply { bottomMargin = dp(10) })
         root.addView(viewerButton, matchWrap().apply { bottomMargin = dp(10) })
         root.addView(switchCameraButton, matchWrap().apply { bottomMargin = dp(10) })
+        root.addView(nightVisionButton, matchWrap().apply { bottomMargin = dp(10) })
         root.addView(stopButton, matchWrap())
 
         val scroll = ScrollView(this).apply {
@@ -355,6 +384,11 @@ class MainActivity : ComponentActivity() {
                 }
 
                 activeCode = code
+                nightVisionEnabled = false
+                nightVisionSink?.setNightVisionEnabled(false)
+                nightVisionButton.text = "NIGHT VISION: MATI"
+                nightVisionButton.visibility = View.VISIBLE
+
                 remoteRenderer.visibility = View.VISIBLE
                 switchCameraButton.visibility = View.VISIBLE
                 status.text = "TERHUBUNG\nMenunggu video kamera..."
@@ -366,7 +400,9 @@ class MainActivity : ComponentActivity() {
                         isCamera = false,
                         onRemoteTrack = { track: VideoTrack ->
                             runOnUiThread {
-                                track.addSink(remoteRenderer)
+                                nightVisionSink?.let { sink ->
+                                    track.addSink(sink)
+                                }
                                 status.text = "LIVE\nVideo MonView diterima."
                             }
                         },
@@ -408,6 +444,14 @@ class MainActivity : ComponentActivity() {
         startingCamera = false
         lastCameraSwitchRequest = 0L
 
+        nightVisionEnabled = false
+        nightVisionSink?.setNightVisionEnabled(false)
+
+        if (::nightVisionButton.isInitialized) {
+            nightVisionButton.text = "NIGHT VISION: MATI"
+            nightVisionButton.visibility = View.GONE
+        }
+
         if (::switchCameraButton.isInitialized) {
             switchCameraButton.visibility = View.GONE
             switchCameraButton.isEnabled = true
@@ -423,6 +467,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         stopCurrentSession()
+        nightVisionSink = null
+
         if (::remoteRenderer.isInitialized) {
             remoteRenderer.release()
         }
