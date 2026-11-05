@@ -20,99 +20,139 @@ object SessionManager {
     private val random = SecureRandom()
     private const val SESSION_LIFETIME_MS = 300_000L
 
+    private fun getServerOffset(
+        onResult: (Boolean, Long) -> Unit
+    ) {
+        database.getReference(".info/serverTimeOffset")
+            .get()
+            .addOnSuccessListener { snapshot ->
+                val offset = (snapshot.value as? Number)?.toLong()
+                if (offset == null) {
+                    onResult(false, 0L)
+                } else {
+                    onResult(true, offset)
+                }
+            }
+            .addOnFailureListener {
+                onResult(false, 0L)
+            }
+    }
+
     fun createSession(onResult: (Boolean, String) -> Unit) {
         FirebaseManager.login { success, uid ->
             if (!success || uid.isBlank()) {
-                onResult(false, "Login Firebase gagal")
+                onResult(false, "Login Firebase gagal: $uid")
                 return@login
             }
 
-            val characters =
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-
-            val code = buildString {
-                repeat(24) {
-                    append(characters[random.nextInt(characters.length)])
+            getServerOffset { timeReady, offset ->
+                if (!timeReady) {
+                    onResult(false, "Gagal membaca waktu server Firebase.")
+                    return@getServerOffset
                 }
+
+                val characters =
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+                val code = buildString {
+                    repeat(24) {
+                        append(characters[random.nextInt(characters.length)])
+                    }
+                }
+
+                val serverNow = System.currentTimeMillis() + offset
+
+                val data = mapOf(
+                    "owner" to uid,
+                    "createdAt" to ServerValue.TIMESTAMP,
+                    "expiresAt" to serverNow + SESSION_LIFETIME_MS,
+                    "status" to "waiting"
+                )
+
+                database.getReference("sessions").child(code)
+                    .setValue(data)
+                    .addOnSuccessListener {
+                        onResult(true, code)
+                    }
+                    .addOnFailureListener {
+                        onResult(false, "Gagal membuat sesi: ${it.message}")
+                    }
             }
-
-            val data = mapOf(
-                "owner" to uid,
-                "createdAt" to ServerValue.TIMESTAMP,
-                "expiresAt" to System.currentTimeMillis() + SESSION_LIFETIME_MS,
-                "status" to "waiting"
-            )
-
-            database.getReference("sessions").child(code)
-                .setValue(data)
-                .addOnSuccessListener {
-                    onResult(true, code)
-                }
-                .addOnFailureListener {
-                    onResult(false, it.message ?: "Gagal membuat QR")
-                }
         }
     }
 
     fun joinSession(code: String, onResult: (Boolean, String) -> Unit) {
         if (!Regex("^[A-Za-z0-9]{24}$").matches(code)) {
-            onResult(false, "Format QR tidak valid")
+            onResult(false, "Format QR tidak valid: $code")
             return
         }
 
         FirebaseManager.login { success, uid ->
             if (!success || uid.isBlank()) {
-                onResult(false, "Login Firebase gagal")
+                onResult(false, "Login Firebase gagal: $uid")
                 return@login
             }
 
-            val reference = database.getReference("sessions").child(code)
-
-            reference.get()
-                .addOnSuccessListener { snapshot ->
-                    if (!snapshot.exists()) {
-                        onResult(false, "Sesi QR tidak ditemukan. Buat QR baru.")
-                        return@addOnSuccessListener
-                    }
-
-                    val owner = snapshot.child("owner")
-                        .getValue(String::class.java)
-
-                    val viewerUid = snapshot.child("viewerUid")
-                        .getValue(String::class.java)
-
-                    val expiresAt = (snapshot.child("expiresAt").value as? Number)
-                        ?.toLong() ?: 0L
-
-                    when {
-                        owner.isNullOrBlank() ->
-                            onResult(false, "Data pemilik QR tidak lengkap.")
-
-                        owner == uid ->
-                            onResult(false, "Kedua HP menggunakan akun Firebase yang sama.")
-
-                        !viewerUid.isNullOrBlank() ->
-                            onResult(false, "QR sudah dipakai. Buat QR baru.")
-
-                        expiresAt == 0L ->
-                            onResult(false, "Waktu QR tidak valid.")
-
-                        expiresAt <= System.currentTimeMillis() ->
-                            onResult(false, "QR kedaluwarsa. Buat QR baru.")
-
-                        else ->
-                            claimSession(reference, uid, onResult)
-                    }
+            getServerOffset { timeReady, offset ->
+                if (!timeReady) {
+                    onResult(false, "Gagal membaca waktu server Firebase.")
+                    return@getServerOffset
                 }
-                .addOnFailureListener {
-                    onResult(false, "Gagal membaca Firebase: ${it.message}")
-                }
+
+                val serverNow = System.currentTimeMillis() + offset
+                val reference = database.getReference("sessions").child(code)
+
+                reference.get()
+                    .addOnSuccessListener { snapshot ->
+                        if (!snapshot.exists()) {
+                            onResult(
+                                false,
+                                "Sesi QR tidak ditemukan. Kode terbaca: $code"
+                            )
+                            return@addOnSuccessListener
+                        }
+
+                        val owner = snapshot.child("owner")
+                            .getValue(String::class.java)
+
+                        val viewerUid = snapshot.child("viewerUid")
+                            .getValue(String::class.java)
+
+                        val expiresAt =
+                            (snapshot.child("expiresAt").value as? Number)
+                                ?.toLong() ?: 0L
+
+                        when {
+                            owner.isNullOrBlank() ->
+                                onResult(false, "Data pemilik QR tidak lengkap.")
+
+                            owner == uid ->
+                                onResult(false, "Kedua HP memakai akun Firebase yang sama.")
+
+                            !viewerUid.isNullOrBlank() ->
+                                onResult(false, "QR sudah dipakai. Buat QR baru.")
+
+                            expiresAt == 0L ->
+                                onResult(false, "Waktu QR tidak valid.")
+
+                            expiresAt <= serverNow ->
+                                onResult(false, "QR kedaluwarsa. Buat QR baru.")
+
+                            else ->
+                                claimSession(reference, uid, offset, onResult)
+                        }
+                    }
+                    .addOnFailureListener {
+                        onResult(false, "Gagal membaca Firebase: ${it.message}")
+                    }
+            }
         }
     }
 
     private fun claimSession(
         reference: DatabaseReference,
         uid: String,
+        offset: Long,
         onResult: (Boolean, String) -> Unit
     ) {
         var rejectionReason = "QR sudah dipakai perangkat lain."
@@ -134,8 +174,11 @@ object SessionManager {
                 val viewerUid = currentData.child("viewerUid")
                     .getValue(String::class.java)
 
-                val expiresAt = (currentData.child("expiresAt").value as? Number)
-                    ?.toLong() ?: 0L
+                val expiresAt =
+                    (currentData.child("expiresAt").value as? Number)
+                        ?.toLong() ?: 0L
+
+                val serverNow = System.currentTimeMillis() + offset
 
                 when {
                     owner == uid -> {
@@ -153,7 +196,7 @@ object SessionManager {
                         return Transaction.abort()
                     }
 
-                    expiresAt <= System.currentTimeMillis() -> {
+                    expiresAt <= serverNow -> {
                         rejectionReason = "QR sudah kedaluwarsa."
                         return Transaction.abort()
                     }
