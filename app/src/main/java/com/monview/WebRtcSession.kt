@@ -3,6 +3,7 @@ package com.monview
 
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.ValueEventListener
+import org.webrtc.AudioTrack
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
@@ -17,7 +18,8 @@ class WebRtcSession(
     private val code: String,
     private val isCamera: Boolean,
     private val onRemoteTrack: (VideoTrack) -> Unit,
-    private val onStatus: (String) -> Unit
+    private val onStatus: (String) -> Unit,
+    private val onRemoteAudioTrack: (AudioTrack) -> Unit = {}
 ) {
     private var peerConnection: PeerConnection? = null
     private var answerListener: ValueEventListener? = null
@@ -62,6 +64,10 @@ class WebRtcSession(
             stream.videoTracks.firstOrNull()?.let {
                 onRemoteTrack(it)
             }
+
+            stream.audioTracks.firstOrNull()?.let {
+                onRemoteAudioTrack(it)
+            }
         }
 
         override fun onRemoveStream(stream: MediaStream) {}
@@ -74,16 +80,16 @@ class WebRtcSession(
             receiver: RtpReceiver,
             mediaStreams: Array<MediaStream>
         ) {
-            val track = receiver.track()
-            if (track is VideoTrack) {
-                onRemoteTrack(track)
+            when (val track = receiver.track()) {
+                is VideoTrack -> onRemoteTrack(track)
+                is AudioTrack -> onRemoteAudioTrack(track)
             }
         }
 
         override fun onTrack(transceiver: RtpTransceiver) {
-            val track = transceiver.receiver.track()
-            if (track is VideoTrack) {
-                onRemoteTrack(track)
+            when (val track = transceiver.receiver.track()) {
+                is VideoTrack -> onRemoteTrack(track)
+                is AudioTrack -> onRemoteAudioTrack(track)
             }
         }
     }
