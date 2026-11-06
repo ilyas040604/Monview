@@ -145,7 +145,7 @@ class MainActivity : ComponentActivity() {
         nightVisionButton = makeButton("NIGHT VISION: MATI") {
             nightVisionEnabled = !nightVisionEnabled
             nightVisionSink?.setNightVisionEnabled(nightVisionEnabled)
-            text = if (nightVisionEnabled) {
+            nightVisionButton.text = if (nightVisionEnabled) {
                 "NIGHT VISION: AKTIF"
             } else {
                 "NIGHT VISION: MATI"
@@ -157,7 +157,7 @@ class MainActivity : ComponentActivity() {
         audioButton = makeButton("SUARA HP: AKTIF") {
             audioEnabled = !audioEnabled
             remoteAudioTrack?.setEnabled(audioEnabled)
-            text = if (audioEnabled) {
+            audioButton.text = if (audioEnabled) {
                 "SUARA HP: AKTIF"
             } else {
                 "SENYAP: AKTIF"
@@ -174,9 +174,13 @@ class MainActivity : ComponentActivity() {
         root.addView(brand, fullWidth())
         root.addView(status, fullWidth())
         root.addView(qrImage, LinearLayout.LayoutParams(220, 220))
-        root.addView(remoteRenderer, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 360
-        ))
+        root.addView(
+            remoteRenderer,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                360
+            )
+        )
         root.addView(cameraButton, fullWidth())
         root.addView(viewerButton, fullWidth())
         root.addView(switchCameraButton, fullWidth())
