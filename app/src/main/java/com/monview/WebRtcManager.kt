@@ -43,7 +43,21 @@ object WebRtcManager {
         )
 
         val configuration =
-            PeerConnection.RTCConfiguration(iceServers)
+            PeerConnection.RTCConfiguration(iceServers).apply {
+                sdpSemantics =
+                    PeerConnection.SdpSemantics.UNIFIED_PLAN
+
+                bundlePolicy =
+                    PeerConnection.BundlePolicy.MAXBUNDLE
+
+                rtcpMuxPolicy =
+                    PeerConnection.RtcpMuxPolicy.REQUIRE
+
+                continualGatheringPolicy =
+                    PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+
+                iceCandidatePoolSize = 10
+            }
 
         return getFactory().createPeerConnection(
             configuration,
