@@ -1,6 +1,7 @@
 
 package com.monview
 
+import android.content.Context
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ServerValue
 import com.google.firebase.database.ValueEventListener
@@ -20,7 +21,6 @@ object SessionManager {
     private val random = SecureRandom()
     private const val SESSION_LIFETIME_MS = 300_000L
 
-    // Membaca selisih waktu server Firebase menggunakan listener.
     private fun getServerOffset(
         onResult: (Boolean, Long) -> Unit
     ) {
@@ -29,12 +29,7 @@ object SessionManager {
 
                 override fun onDataChange(snapshot: DataSnapshot) {
                     val offset = (snapshot.value as? Number)?.toLong()
-
-                    if (offset == null) {
-                        onResult(false, 0L)
-                    } else {
-                        onResult(true, offset)
-                    }
+                    onResult(offset != null, offset ?: 0L)
                 }
 
                 override fun onCancelled(error: DatabaseError) {
@@ -86,9 +81,13 @@ object SessionManager {
         }
     }
 
-    fun joinSession(code: String, onResult: (Boolean, String) -> Unit) {
+    fun joinSession(
+        code: String,
+        context: Context? = null,
+        onResult: (Boolean, String) -> Unit
+    ) {
         if (!Regex("^[A-Za-z0-9]{24}$").matches(code)) {
-            onResult(false, "Format QR tidak valid: $code")
+            onResult(false, "Format QR tidak valid.")
             return
         }
 
@@ -110,10 +109,7 @@ object SessionManager {
                 reference.get()
                     .addOnSuccessListener { snapshot ->
                         if (!snapshot.exists()) {
-                            onResult(
-                                false,
-                                "Sesi QR tidak ditemukan. Kode terbaca: $code"
-                            )
+                            onResult(false, "Sesi QR tidak ditemukan.")
                             return@addOnSuccessListener
                         }
 
@@ -135,16 +131,24 @@ object SessionManager {
                                 onResult(false, "Kedua HP memakai akun Firebase yang sama.")
 
                             !viewerUid.isNullOrBlank() ->
-                                onResult(false, "QR sudah dipakai. Buat QR baru.")
+                                onResult(false, "QR sudah pernah digunakan.")
 
                             expiresAt == 0L ->
                                 onResult(false, "Waktu QR tidak valid.")
 
                             expiresAt <= serverNow ->
-                                onResult(false, "QR kedaluwarsa. Buat QR baru.")
+                                onResult(false, "QR sudah kedaluwarsa.")
 
                             else ->
-                                claimSession(reference, uid, offset, onResult)
+                                claimSession(
+                                    reference,
+                                    code,
+                                    uid,
+                                    owner,
+                                    context,
+                                    offset,
+                                    onResult
+                                )
                         }
                     }
                     .addOnFailureListener {
@@ -156,7 +160,10 @@ object SessionManager {
 
     private fun claimSession(
         reference: DatabaseReference,
+        code: String,
         uid: String,
+        ownerUid: String,
+        context: Context?,
         offset: Long,
         onResult: (Boolean, String) -> Unit
     ) {
@@ -186,22 +193,22 @@ object SessionManager {
                 val serverNow = System.currentTimeMillis() + offset
 
                 when {
+                    owner != ownerUid -> {
+                        rejectionReason = "Identitas pemilik QR berubah."
+                        return Transaction.abort()
+                    }
+
                     owner == uid -> {
                         rejectionReason = "Kedua HP memakai akun Firebase yang sama."
                         return Transaction.abort()
                     }
 
                     !viewerUid.isNullOrBlank() -> {
-                        rejectionReason = "QR sudah dipakai. Buat QR baru."
+                        rejectionReason = "QR sudah pernah digunakan."
                         return Transaction.abort()
                     }
 
-                    expiresAt == 0L -> {
-                        rejectionReason = "Waktu QR tidak valid."
-                        return Transaction.abort()
-                    }
-
-                    expiresAt <= serverNow -> {
+                    expiresAt == 0L || expiresAt <= serverNow -> {
                         rejectionReason = "QR sudah kedaluwarsa."
                         return Transaction.abort()
                     }
@@ -223,11 +230,26 @@ object SessionManager {
                     error != null ->
                         onResult(false, "Firebase menolak pairing: ${error.message}")
 
-                    committed ->
-                        onResult(true, "HP pemantau berhasil bergabung.")
+                    !committed ->
+                        onResult(false, rejectionReason)
+
+                    context != null -> {
+                        val saved = PairingStore.save(
+                            context,
+                            code,
+                            "viewer",
+                            ownerUid
+                        )
+
+                        if (saved) {
+                            onResult(true, "Pairing HP pemantau berhasil disimpan.")
+                        } else {
+                            onResult(false, "Pairing berhasil, tetapi penyimpanan lokal gagal.")
+                        }
+                    }
 
                     else ->
-                        onResult(false, rejectionReason)
+                        onResult(true, "HP pemantau berhasil bergabung.")
                 }
             }
         }, false)
@@ -235,20 +257,41 @@ object SessionManager {
 
     fun listenForViewer(
         code: String,
+        context: Context? = null,
         onJoined: (Boolean, String) -> Unit
     ): ValueEventListener {
 
         val reference = database.getReference("sessions/$code")
+        var pairingSaved = false
 
         val listener = object : ValueEventListener {
 
             override fun onDataChange(snapshot: DataSnapshot) {
+                val ownerUid = snapshot.child("owner")
+                    .getValue(String::class.java)
+
                 val viewerUid = snapshot.child("viewerUid")
                     .getValue(String::class.java)
 
-                if (!viewerUid.isNullOrBlank()) {
-                    onJoined(true, "HP pemantau sudah bergabung")
+                if (ownerUid.isNullOrBlank() ||
+                    viewerUid.isNullOrBlank()
+                ) return
+
+                if (context != null && !pairingSaved) {
+                    pairingSaved = PairingStore.save(
+                        context,
+                        code,
+                        "camera",
+                        viewerUid
+                    )
+
+                    if (!pairingSaved) {
+                        onJoined(false, "Gagal menyimpan pairing HP kamera.")
+                        return
+                    }
                 }
+
+                onJoined(true, "HP pemantau sudah bergabung.")
             }
 
             override fun onCancelled(error: DatabaseError) {
