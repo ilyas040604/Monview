@@ -7,6 +7,7 @@ import org.webrtc.AudioTrack
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
+import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.RtpReceiver
 import org.webrtc.RtpTransceiver
@@ -26,27 +27,65 @@ class WebRtcSession(
     private var offerListener: ValueEventListener? = null
     private var candidateListener: ChildEventListener? = null
 
-    private val pendingCandidates =
-        mutableListOf<IceCandidate>()
+    private val pendingCandidates = mutableListOf<IceCandidate>()
+    private val deliveredTrackIds = mutableSetOf<String>()
 
     private var remoteDescriptionReady = false
 
+    private fun deliverTrack(track: MediaStreamTrack?) {
+        when (track) {
+            is VideoTrack -> {
+                if (deliveredTrackIds.add(track.id())) {
+                    track.setEnabled(true)
+                    onRemoteTrack(track)
+                    onStatus("VIDEO TRACK DITERIMA")
+                }
+            }
+
+            is AudioTrack -> {
+                if (deliveredTrackIds.add(track.id())) {
+                    track.setEnabled(true)
+                    onRemoteAudioTrack(track)
+                    onStatus("AUDIO TRACK DITERIMA")
+                }
+            }
+        }
+    }
+
     private val observer = object : PeerConnection.Observer {
+
         override fun onSignalingChange(
             state: PeerConnection.SignalingState
-        ) {}
+        ) {
+            onStatus("Signaling: $state")
+        }
 
         override fun onIceConnectionChange(
             state: PeerConnection.IceConnectionState
         ) {
-            onStatus("Koneksi: $state")
+            onStatus("ICE: $state")
         }
 
-        override fun onIceConnectionReceivingChange(receiving: Boolean) {}
+        override fun onConnectionChange(
+            state: PeerConnection.PeerConnectionState
+        ) {
+            onStatus("WEBRTC: $state")
+        }
+
+        override fun onIceConnectionReceivingChange(
+            receiving: Boolean
+        ) {
+            onStatus(
+                if (receiving) "MENERIMA DATA ICE"
+                else "BELUM MENERIMA DATA ICE"
+            )
+        }
 
         override fun onIceGatheringChange(
             state: PeerConnection.IceGatheringState
-        ) {}
+        ) {
+            onStatus("Pengumpulan ICE: $state")
+        }
 
         override fun onIceCandidate(candidate: IceCandidate) {
             WebRtcSignaling.sendCandidate(
@@ -62,35 +101,33 @@ class WebRtcSession(
 
         override fun onAddStream(stream: MediaStream) {
             stream.videoTracks.firstOrNull()?.let {
-                onRemoteTrack(it)
+                deliverTrack(it)
             }
 
             stream.audioTracks.firstOrNull()?.let {
-                onRemoteAudioTrack(it)
+                deliverTrack(it)
             }
         }
 
         override fun onRemoveStream(stream: MediaStream) {}
 
-        override fun onDataChannel(dataChannel: org.webrtc.DataChannel) {}
+        override fun onDataChannel(
+            dataChannel: org.webrtc.DataChannel
+        ) {}
 
-        override fun onRenegotiationNeeded() {}
+        override fun onRenegotiationNeeded() {
+            onStatus("Negosiasi ulang diperlukan")
+        }
 
         override fun onAddTrack(
             receiver: RtpReceiver,
             mediaStreams: Array<MediaStream>
         ) {
-            when (val track = receiver.track()) {
-                is VideoTrack -> onRemoteTrack(track)
-                is AudioTrack -> onRemoteAudioTrack(track)
-            }
+            deliverTrack(receiver.track())
         }
 
         override fun onTrack(transceiver: RtpTransceiver) {
-            when (val track = transceiver.receiver.track()) {
-                is VideoTrack -> onRemoteTrack(track)
-                is AudioTrack -> onRemoteAudioTrack(track)
-            }
+            deliverTrack(transceiver.receiver.track())
         }
     }
 
@@ -113,18 +150,20 @@ class WebRtcSession(
             connection.addIceCandidate(it)
         }
 
+        val count = pendingCandidates.size
         pendingCandidates.clear()
+
+        onStatus("Deskripsi diterima. ICE kandidat: $count")
     }
 
     fun startCamera(stream: CameraStream) {
-        if (!isCamera) return
-        if (peerConnection != null) return
+        if (!isCamera || peerConnection != null) return
 
         val connection =
             WebRtcManager.createPeerConnection(observer)
 
         if (connection == null) {
-            onStatus("Gagal membuat koneksi")
+            onStatus("GAGAL MEMBUAT PEER CONNECTION")
             return
         }
 
@@ -134,12 +173,17 @@ class WebRtcSession(
         val audio = stream.audioTrack
 
         if (video == null || audio == null) {
-            onStatus("Kamera atau mikrofon belum siap")
+            onStatus("TRACK KAMERA ATAU MIKROFON KOSONG")
             return
         }
 
+        video.setEnabled(true)
+        audio.setEnabled(true)
+
         connection.addTrack(video, listOf("monview_stream"))
         connection.addTrack(audio, listOf("monview_stream"))
+
+        onStatus("VIDEO DAN AUDIO DITAMBAHKAN")
 
         candidateListener =
             WebRtcSignaling.listenCandidates(code, true) {
@@ -148,7 +192,8 @@ class WebRtcSession(
 
         answerListener =
             WebRtcSignaling.listenAnswer(code) { answer ->
-                if (answer != null &&
+                if (
+                    answer != null &&
                     connection.signalingState() ==
                     PeerConnection.SignalingState.HAVE_LOCAL_OFFER
                 ) {
@@ -156,11 +201,11 @@ class WebRtcSession(
                         object : SimpleSdpObserver() {
                             override fun onSetSuccess() {
                                 flushPendingCandidates()
-                                onStatus("Answer diterima")
+                                onStatus("ANSWER DITERIMA KAMERA")
                             }
 
                             override fun onSetFailure(error: String) {
-                                onStatus("Gagal menerima answer: $error")
+                                onStatus("ANSWER GAGAL: $error")
                             }
                         },
                         answer
@@ -179,13 +224,16 @@ class WebRtcSession(
                                 WebRtcSignaling.sendOffer(
                                     code,
                                     description
-                                ) { _, message ->
-                                    onStatus(message)
+                                ) { success, message ->
+                                    onStatus(
+                                        if (success) "OFFER TERKIRIM"
+                                        else "OFFER GAGAL: $message"
+                                    )
                                 }
                             }
 
                             override fun onSetFailure(error: String) {
-                                onStatus("Gagal menyimpan offer: $error")
+                                onStatus("LOCAL DESCRIPTION GAGAL: $error")
                             }
                         },
                         description
@@ -193,7 +241,7 @@ class WebRtcSession(
                 }
 
                 override fun onCreateFailure(error: String) {
-                    onStatus("Gagal membuat offer: $error")
+                    onStatus("GAGAL MEMBUAT OFFER: $error")
                 }
             },
             MediaConstraints()
@@ -201,18 +249,18 @@ class WebRtcSession(
     }
 
     fun startViewer() {
-        if (isCamera) return
-        if (peerConnection != null) return
+        if (isCamera || peerConnection != null) return
 
         val connection =
             WebRtcManager.createPeerConnection(observer)
 
         if (connection == null) {
-            onStatus("Gagal membuat koneksi")
+            onStatus("GAGAL MEMBUAT PEER CONNECTION")
             return
         }
 
         peerConnection = connection
+        onStatus("MENUNGGU OFFER KAMERA")
 
         candidateListener =
             WebRtcSignaling.listenCandidates(code, false) {
@@ -221,10 +269,13 @@ class WebRtcSession(
 
         offerListener =
             WebRtcSignaling.listenOffer(code) { offer ->
-                if (offer != null &&
+                if (
+                    offer != null &&
                     connection.signalingState() ==
                     PeerConnection.SignalingState.STABLE
                 ) {
+                    onStatus("OFFER DITERIMA PEMANTAU")
+
                     connection.setRemoteDescription(
                         object : SimpleSdpObserver() {
                             override fun onSetSuccess() {
@@ -241,8 +292,11 @@ class WebRtcSession(
                                                         WebRtcSignaling.sendAnswer(
                                                             code,
                                                             answer
-                                                        ) { _, message ->
-                                                            onStatus(message)
+                                                        ) { success, message ->
+                                                            onStatus(
+                                                                if (success) "ANSWER TERKIRIM"
+                                                                else "ANSWER GAGAL: $message"
+                                                            )
                                                         }
                                                     }
 
@@ -250,7 +304,7 @@ class WebRtcSession(
                                                         error: String
                                                     ) {
                                                         onStatus(
-                                                            "Gagal menyimpan answer: $error"
+                                                            "LOCAL ANSWER GAGAL: $error"
                                                         )
                                                     }
                                                 },
@@ -262,7 +316,7 @@ class WebRtcSession(
                                             error: String
                                         ) {
                                             onStatus(
-                                                "Gagal membuat answer: $error"
+                                                "GAGAL MEMBUAT ANSWER: $error"
                                             )
                                         }
                                     },
@@ -271,7 +325,7 @@ class WebRtcSession(
                             }
 
                             override fun onSetFailure(error: String) {
-                                onStatus("Gagal menerima offer: $error")
+                                onStatus("OFFER GAGAL DITERIMA: $error")
                             }
                         },
                         offer
@@ -302,13 +356,14 @@ class WebRtcSession(
         candidateListener = null
 
         pendingCandidates.clear()
+        deliveredTrackIds.clear()
         remoteDescriptionReady = false
 
         peerConnection?.close()
         peerConnection?.dispose()
         peerConnection = null
 
-        onStatus("Koneksi dihentikan")
+        onStatus("KONEKSI DIHENTIKAN")
     }
 }
 
