@@ -2,6 +2,7 @@
 package com.monview
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
@@ -36,22 +37,21 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioButton: Button
 
     private var eglBase: EglBase? = null
-    private var cameraStream: CameraStream? = null
     private var webRtcSession: WebRtcSession? = null
     private var viewerListener: ValueEventListener? = null
-    private var cameraSwitchListener: ValueEventListener? = null
     private var nightVisionSink: NightVisionVideoSink? = null
     private var remoteAudioTrack: AudioTrack? = null
 
     private var activeCode: String? = null
     private var startingCamera = false
+    private var cameraServiceStarted = false
     private var nightVisionEnabled = false
     private var audioEnabled = true
-    private var lastCameraSwitchRequest = 0L
 
     private val scannerLauncher =
         registerForActivityResult(ScanContract()) { result ->
             val code = result.contents
+
             if (code.isNullOrBlank()) {
                 status.text = "Pemindaian QR dibatalkan."
             } else {
@@ -124,11 +124,13 @@ class MainActivity : ComponentActivity() {
                 setBeepEnabled(false)
                 setOrientationLocked(true)
             }
+
             scannerLauncher.launch(options)
         }
 
         switchCameraButton = makeButton("GANTI KAMERA") {
             val code = activeCode ?: return@makeButton
+
             WebRtcSignaling.requestCameraSwitch(code) { success, message ->
                 runOnUiThread {
                     status.text = if (success) {
@@ -145,6 +147,7 @@ class MainActivity : ComponentActivity() {
         nightVisionButton = makeButton("NIGHT VISION: MATI") {
             nightVisionEnabled = !nightVisionEnabled
             nightVisionSink?.setNightVisionEnabled(nightVisionEnabled)
+
             nightVisionButton.text = if (nightVisionEnabled) {
                 "NIGHT VISION: AKTIF"
             } else {
@@ -157,6 +160,7 @@ class MainActivity : ComponentActivity() {
         audioButton = makeButton("SUARA HP: AKTIF") {
             audioEnabled = !audioEnabled
             remoteAudioTrack?.setEnabled(audioEnabled)
+
             audioButton.text = if (audioEnabled) {
                 "SUARA HP: AKTIF"
             } else {
@@ -258,47 +262,33 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCameraConnection(code: String) {
-        status.text = "MENYIAPKAN KAMERA..."
+        status.text = "MENYIAPKAN LAYANAN KAMERA..."
 
-        val stream = CameraStream(this)
-        if (!stream.start()) {
-            status.text = "KAMERA ATAU MIKROFON GAGAL AKTIF"
+        try {
+            val intent = Intent(
+                this,
+                MonitorService::class.java
+            ).apply {
+                action = MonitorService.ACTION_START
+                putExtra("session_code", code)
+            }
+
+            ContextCompat.startForegroundService(this, intent)
+
+            cameraServiceStarted = true
+
+            viewerListener?.let {
+                SessionManager.removeViewerListener(code, it)
+            }
+            viewerListener = null
+
+            status.text = "KAMERA AKTIF\nLayanan latar belakang dijalankan."
+
+        } catch (e: Exception) {
             startingCamera = false
-            return
+            cameraServiceStarted = false
+            status.text = "GAGAL MENJALANKAN LAYANAN\n${e.message}"
         }
-
-        cameraStream = stream
-
-        cameraSwitchListener =
-            WebRtcSignaling.listenCameraSwitch(code) { requestAt ->
-                if (requestAt > lastCameraSwitchRequest) {
-                    lastCameraSwitchRequest = requestAt
-                    runOnUiThread {
-                        cameraStream?.switchCamera { success, message ->
-                            runOnUiThread {
-                                status.text = if (success) {
-                                    "KAMERA DIGANTI\n$message"
-                                } else {
-                                    "GAGAL GANTI KAMERA\n$message"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-        webRtcSession = WebRtcSession(
-            code = code,
-            isCamera = true,
-            onRemoteTrack = {},
-            onStatus = { message ->
-                runOnUiThread {
-                    status.text = "MODE KAMERA\n$message"
-                }
-            }
-        )
-
-        webRtcSession?.startCamera(stream)
     }
 
     private fun joinCameraSession(code: String) {
@@ -326,7 +316,9 @@ class MainActivity : ComponentActivity() {
                         isCamera = false,
                         onRemoteTrack = { track: VideoTrack ->
                             runOnUiThread {
-                                nightVisionSink?.let { track.addSink(it) }
+                                nightVisionSink?.let {
+                                    track.addSink(it)
+                                }
                                 status.text = "VIDEO DITERIMA"
                             }
                         },
@@ -345,6 +337,7 @@ class MainActivity : ComponentActivity() {
 
                     webRtcSession?.startViewer()
                     status.text = "TERHUBUNG\nMenunggu video..."
+
                 } catch (e: Exception) {
                     status.text = "GAGAL MEMULAI\n${e.message}"
                 }
@@ -356,17 +349,26 @@ class MainActivity : ComponentActivity() {
         val code = activeCode
 
         if (code != null && viewerListener != null) {
-            SessionManager.removeViewerListener(code, viewerListener!!)
-        }
-        viewerListener = null
-
-        if (code != null && cameraSwitchListener != null) {
-            WebRtcSignaling.removeCameraSwitchListener(
+            SessionManager.removeViewerListener(
                 code,
-                cameraSwitchListener!!
+                viewerListener!!
             )
         }
-        cameraSwitchListener = null
+
+        viewerListener = null
+
+        if (cameraServiceStarted) {
+            val intent = Intent(
+                this,
+                MonitorService::class.java
+            ).apply {
+                action = MonitorService.ACTION_STOP
+            }
+
+            startService(intent)
+        }
+
+        cameraServiceStarted = false
 
         remoteAudioTrack?.setEnabled(false)
         remoteAudioTrack = null
@@ -374,12 +376,8 @@ class MainActivity : ComponentActivity() {
         webRtcSession?.stop()
         webRtcSession = null
 
-        cameraStream?.stop()
-        cameraStream = null
-
         activeCode = null
         startingCamera = false
-        lastCameraSwitchRequest = 0L
         audioEnabled = true
         nightVisionEnabled = false
 
@@ -396,10 +394,30 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        stopCurrentSession()
+        val code = activeCode
+
+        if (code != null && viewerListener != null) {
+            SessionManager.removeViewerListener(
+                code,
+                viewerListener!!
+            )
+        }
+
+        viewerListener = null
+
+        // Jangan hentikan MonitorService saat halaman aplikasi ditutup.
+        // Layanan kamera tetap berjalan di latar belakang.
+
+        remoteAudioTrack?.setEnabled(false)
+        remoteAudioTrack = null
+
+        webRtcSession?.stop()
+        webRtcSession = null
+
         remoteRenderer.release()
         eglBase?.release()
         eglBase = null
+
         super.onDestroy()
     }
 }
