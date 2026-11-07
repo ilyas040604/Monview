@@ -1,3 +1,4 @@
+
 package com.monview
 
 import com.google.firebase.database.ChildEventListener
@@ -17,8 +18,9 @@ object WebRtcSignaling {
         "https://monview-3eb52-default-rtdb.asia-southeast1.firebasedatabase.app/"
     )
 
+    // Seluruh komunikasi WebRTC dipisahkan dari data pairing.
     private fun sessionRef(code: String): DatabaseReference {
-        return database.getReference("sessions").child(code)
+        return database.getReference("rtcSessions").child(code)
     }
 
     private fun connectionRef(
@@ -34,10 +36,11 @@ object WebRtcSignaling {
         code: String,
         attemptId: String
     ): DatabaseReference {
-        return connectionRef(code, attemptId).child("signals")
+        return connectionRef(code, attemptId)
+            .child("signals")
     }
 
-    // MEMBUAT ID PERCOBAAN KONEKSI BARU DARI HP PEMANTAU
+    // MEMBUAT PERMINTAAN KONEKSI DARI HP PEMANTAU
     fun requestConnection(
         code: String,
         onResult: (Boolean, String, String) -> Unit
@@ -45,7 +48,11 @@ object WebRtcSignaling {
         FirebaseManager.login { success, uid ->
 
             if (!success || uid.isBlank()) {
-                onResult(false, "", "Login Firebase gagal: $uid")
+                onResult(
+                    false,
+                    "",
+                    "Login Firebase gagal: $uid"
+                )
                 return@login
             }
 
@@ -64,7 +71,11 @@ object WebRtcSignaling {
                 .child("activeConnection")
                 .setValue(data)
                 .addOnSuccessListener {
-                    onResult(true, attemptId, "Permintaan koneksi terkirim.")
+                    onResult(
+                        true,
+                        attemptId,
+                        "Permintaan koneksi terkirim."
+                    )
                 }
                 .addOnFailureListener {
                     onResult(
@@ -76,14 +87,15 @@ object WebRtcSignaling {
         }
     }
 
-    // MENDENGARKAN PERMINTAAN KONEKSI BARU DI HP KAMERA
+    // MENDENGARKAN PERMINTAAN KONEKSI DI HP KAMERA
     fun listenActiveConnection(
         code: String,
         expectedViewerUid: String,
         onAttempt: (String?) -> Unit
     ): ValueEventListener {
 
-        val reference = sessionRef(code).child("activeConnection")
+        val reference = sessionRef(code)
+            .child("activeConnection")
 
         val listener = object : ValueEventListener {
 
@@ -94,7 +106,8 @@ object WebRtcSignaling {
                 val viewerUid = snapshot.child("viewerUid")
                     .getValue(String::class.java)
 
-                if (snapshot.exists() &&
+                if (
+                    snapshot.exists() &&
                     viewerUid == expectedViewerUid &&
                     !attemptId.isNullOrBlank()
                 ) {
@@ -144,13 +157,14 @@ object WebRtcSignaling {
             )
     }
 
-    // MENDENGARKAN STATUS KAMERA DI HP PEMANTAU
+    // MENDENGARKAN STATUS KAMERA
     fun listenCameraStatus(
         code: String,
         onStatus: (String) -> Unit
     ): ValueEventListener {
 
-        val reference = sessionRef(code).child("cameraStatus")
+        val reference = sessionRef(code)
+            .child("cameraStatus")
 
         val listener = object : ValueEventListener {
 
@@ -181,7 +195,7 @@ object WebRtcSignaling {
             .removeEventListener(listener)
     }
 
-    // PERINTAH GANTI KAMERA
+    // MEMINTA GANTI KAMERA
     fun requestCameraSwitch(
         code: String,
         onResult: (Boolean, String) -> Unit
@@ -191,7 +205,10 @@ object WebRtcSignaling {
             .child("switchRequest")
             .setValue(ServerValue.TIMESTAMP)
             .addOnSuccessListener {
-                onResult(true, "Perintah ganti kamera terkirim.")
+                onResult(
+                    true,
+                    "Perintah ganti kamera terkirim."
+                )
             }
             .addOnFailureListener {
                 onResult(
@@ -240,7 +257,7 @@ object WebRtcSignaling {
             .removeEventListener(listener)
     }
 
-    // MENGIRIM OFFER
+    // MENGIRIM OFFER DARI HP KAMERA
     fun sendOffer(
         code: String,
         attemptId: String,
@@ -260,18 +277,22 @@ object WebRtcSignaling {
                 onResult(true, "Offer terkirim.")
             }
             .addOnFailureListener {
-                onResult(false, it.message ?: "Offer gagal dikirim.")
+                onResult(
+                    false,
+                    it.message ?: "Offer gagal dikirim."
+                )
             }
     }
 
-    // MENDENGARKAN OFFER
+    // MENDENGARKAN OFFER DI HP PEMANTAU
     fun listenOffer(
         code: String,
         attemptId: String,
         onOffer: (SessionDescription?) -> Unit
     ): ValueEventListener {
 
-        val reference = signalsRef(code, attemptId).child("offer")
+        val reference = signalsRef(code, attemptId)
+            .child("offer")
 
         val listener = object : ValueEventListener {
 
@@ -286,11 +307,12 @@ object WebRtcSignaling {
                     try {
                         onOffer(
                             SessionDescription(
-                                SessionDescription.Type.fromCanonicalForm(type),
+                                SessionDescription.Type
+                                    .fromCanonicalForm(type),
                                 sdp
                             )
                         )
-                    } catch (error: Exception) {
+                    } catch (_: Exception) {
                         onOffer(null)
                     }
                 }
@@ -305,7 +327,7 @@ object WebRtcSignaling {
         return listener
     }
 
-    // MENGIRIM ANSWER
+    // MENGIRIM ANSWER DARI HP PEMANTAU
     fun sendAnswer(
         code: String,
         attemptId: String,
@@ -325,18 +347,22 @@ object WebRtcSignaling {
                 onResult(true, "Answer terkirim.")
             }
             .addOnFailureListener {
-                onResult(false, it.message ?: "Answer gagal dikirim.")
+                onResult(
+                    false,
+                    it.message ?: "Answer gagal dikirim."
+                )
             }
     }
 
-    // MENDENGARKAN ANSWER
+    // MENDENGARKAN ANSWER DI HP KAMERA
     fun listenAnswer(
         code: String,
         attemptId: String,
         onAnswer: (SessionDescription?) -> Unit
     ): ValueEventListener {
 
-        val reference = signalsRef(code, attemptId).child("answer")
+        val reference = signalsRef(code, attemptId)
+            .child("answer")
 
         val listener = object : ValueEventListener {
 
@@ -351,11 +377,12 @@ object WebRtcSignaling {
                     try {
                         onAnswer(
                             SessionDescription(
-                                SessionDescription.Type.fromCanonicalForm(type),
+                                SessionDescription.Type
+                                    .fromCanonicalForm(type),
                                 sdp
                             )
                         )
-                    } catch (error: Exception) {
+                    } catch (_: Exception) {
                         onAnswer(null)
                     }
                 }
@@ -411,7 +438,8 @@ object WebRtcSignaling {
             "cameraCandidates"
         }
 
-        val reference = signalsRef(code, attemptId).child(path)
+        val reference = signalsRef(code, attemptId)
+            .child(path)
 
         val listener = object : ChildEventListener {
 
@@ -422,14 +450,21 @@ object WebRtcSignaling {
                 val mid = snapshot.child("sdpMid")
                     .getValue(String::class.java)
 
-                val index = (snapshot.child("sdpMLineIndex").value as? Number)
-                    ?.toInt()
+                val index = (
+                    snapshot.child("sdpMLineIndex").value as? Number
+                )?.toInt()
 
                 val sdp = snapshot.child("sdp")
                     .getValue(String::class.java)
 
-                if (mid != null && index != null && sdp != null) {
-                    onCandidate(IceCandidate(mid, index, sdp))
+                if (
+                    mid != null &&
+                    index != null &&
+                    sdp != null
+                ) {
+                    onCandidate(
+                        IceCandidate(mid, index, sdp)
+                    )
                 }
             }
 
@@ -439,7 +474,9 @@ object WebRtcSignaling {
             ) {
             }
 
-            override fun onChildRemoved(snapshot: DataSnapshot) {
+            override fun onChildRemoved(
+                snapshot: DataSnapshot
+            ) {
             }
 
             override fun onChildMoved(
