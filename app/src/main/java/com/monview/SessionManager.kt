@@ -130,8 +130,8 @@ object SessionManager {
                             owner == uid ->
                                 onResult(false, "Kedua HP memakai akun Firebase yang sama.")
 
-                            !viewerUid.isNullOrBlank() ->
-                                onResult(false, "QR sudah pernah digunakan.")
+                            !viewerUid.isNullOrBlank() && viewerUid != uid ->
+                                onResult(false, "QR sudah digunakan perangkat lain.")
 
                             expiresAt == 0L ->
                                 onResult(false, "Waktu QR tidak valid.")
@@ -203,8 +203,8 @@ object SessionManager {
                         return Transaction.abort()
                     }
 
-                    !viewerUid.isNullOrBlank() -> {
-                        rejectionReason = "QR sudah pernah digunakan."
+                    !viewerUid.isNullOrBlank() && viewerUid != uid -> {
+                        rejectionReason = "QR sudah digunakan perangkat lain."
                         return Transaction.abort()
                     }
 
