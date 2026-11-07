@@ -1,4 +1,3 @@
-
 package com.monview
 
 import android.Manifest
@@ -33,43 +32,64 @@ class CameraStream(private val context: Context) {
         if (videoTrack != null && audioTrack != null) return true
 
         val cameraPermission = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.CAMERA
+            context,
+            Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
 
         val audioPermission = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.RECORD_AUDIO
+            context,
+            Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!cameraPermission || !audioPermission) return false
 
         return try {
             WebRtcManager.initialize(context)
+
             val factory = WebRtcManager.getFactory()
+                ?: return false
+
             val enumerator = Camera2Enumerator(context)
 
             val cameraName = enumerator.deviceNames.firstOrNull {
                 enumerator.isFrontFacing(it)
-            } ?: enumerator.deviceNames.firstOrNull() ?: return false
+            } ?: enumerator.deviceNames.firstOrNull()
+                ?: return false
 
             val camera = enumerator.createCapturer(cameraName, null)
                 ?: return false
 
             val egl = EglBase.create()
+
             val helper = SurfaceTextureHelper.create(
-                "MonViewCameraThread", egl.eglBaseContext
-            ) ?: throw IllegalStateException("Gagal menyiapkan kamera")
+                "MonViewCameraThread",
+                egl.eglBaseContext
+            ) ?: throw IllegalStateException(
+                "Gagal menyiapkan kamera"
+            )
 
             val video = factory.createVideoSource(false)
-            camera.initialize(helper, context, video.capturerObserver)
+
+            camera.initialize(
+                helper,
+                context,
+                video.capturerObserver
+            )
+
             camera.startCapture(1280, 720, 24)
 
             val videoMediaTrack = factory.createVideoTrack(
-                "monview_video", video
+                "monview_video",
+                video
             )
 
-            val audio = factory.createAudioSource(MediaConstraints())
+            val audio = factory.createAudioSource(
+                MediaConstraints()
+            )
+
             val audioMediaTrack = factory.createAudioTrack(
-                "monview_audio", audio
+                "monview_audio",
+                audio
             )
 
             capturer = camera
@@ -81,6 +101,7 @@ class CameraStream(private val context: Context) {
             audioTrack = audioMediaTrack
 
             true
+
         } catch (_: Exception) {
             stop()
             false
@@ -98,7 +119,9 @@ class CameraStream(private val context: Context) {
         activeCapturer.switchCamera(
             object : CameraVideoCapturer.CameraSwitchHandler {
 
-                override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                override fun onCameraSwitchDone(
+                    isFrontCamera: Boolean
+                ) {
                     onResult(
                         true,
                         if (isFrontCamera) {
