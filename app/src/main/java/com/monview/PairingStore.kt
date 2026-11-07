@@ -1,4 +1,3 @@
-
 package com.monview
 
 import android.content.Context
@@ -22,13 +21,19 @@ object PairingStore {
         role: String,
         peerUid: String
     ): Boolean {
-        if (pairId.isBlank() ||
+        if (
+            pairId.isBlank() ||
             peerUid.isBlank() ||
             (role != "camera" && role != "viewer")
-        ) return false
+        ) {
+            return false
+        }
 
         return context.applicationContext
-            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getSharedPreferences(
+                PREFS_NAME,
+                Context.MODE_PRIVATE
+            )
             .edit()
             .putString(KEY_PAIR_ID, pairId)
             .putString(KEY_ROLE, role)
@@ -38,18 +43,28 @@ object PairingStore {
 
     fun get(context: Context): Pairing? {
         val prefs = context.applicationContext
-            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getSharedPreferences(
+                PREFS_NAME,
+                Context.MODE_PRIVATE
+            )
 
         val pairId = prefs.getString(KEY_PAIR_ID, null)
         val role = prefs.getString(KEY_ROLE, null)
         val peerUid = prefs.getString(KEY_PEER_UID, null)
 
-        if (pairId.isNullOrBlank() ||
+        if (
+            pairId.isNullOrBlank() ||
             peerUid.isNullOrBlank() ||
             (role != "camera" && role != "viewer")
-        ) return null
+        ) {
+            return null
+        }
 
-        return Pairing(pairId, role, peerUid)
+        return Pairing(
+            pairId = pairId,
+            role = role,
+            peerUid = peerUid
+        )
     }
 
     fun isPaired(context: Context): Boolean {
@@ -58,7 +73,10 @@ object PairingStore {
 
     fun clear(context: Context) {
         context.applicationContext
-            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getSharedPreferences(
+                PREFS_NAME,
+                Context.MODE_PRIVATE
+            )
             .edit()
             .clear()
             .commit()
