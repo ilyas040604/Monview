@@ -1,3 +1,4 @@
+
 package com.monview
 
 import android.Manifest
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var cameraStatus: TextView
     private lateinit var viewerStatus: TextView
+    private lateinit var viewerConnectionLabel: TextView
     private lateinit var qrImage: ImageView
     private lateinit var remoteRenderer: SurfaceViewRenderer
 
@@ -63,6 +65,9 @@ class MainActivity : ComponentActivity() {
     private var remoteVideoTrack: VideoTrack? = null
 
     private var activeCode: String? = null
+    private var activeAttemptId: String? = null
+    private var sessionGeneration = 0L
+    private var connectionTimeoutRunnable: Runnable? = null
     private var startingCamera = false
     private var cameraServiceStarted = false
     private var nightVisionEnabled = false
@@ -278,11 +283,11 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val logo = makeText("MONVIEW", 20f, whiteColor, true)
-        val connected = makeText("● TERHUBUNG", 12f, accentColor, true).apply {
+        viewerConnectionLabel = makeText("● MENYAMBUNG", 12f, mutedColor, true).apply {
             gravity = Gravity.CENTER_VERTICAL
         }
         header.addView(logo, LinearLayout.LayoutParams(0, dp(36), 1f))
-        header.addView(connected)
+        header.addView(viewerConnectionLabel)
 
         viewerStatus = makeText(
             "MENGHUBUNGKAN KE KAMERA...", 12f, whiteColor, true
@@ -413,10 +418,7 @@ class MainActivity : ComponentActivity() {
         bottomPanel.addView(firstRow, fullWidth())
         bottomPanel.addView(secondRow, fullWidth())
         bottomPanel.addView(thirdRow, fullWidth())
-        bottomPanel.addView(
-            stopButton,
-            fullWidth().apply { topMargin = dp(10) }
-        )
+        bottomPanel.addView(stopButton, fullWidth().apply { topMargin = dp(10) })
         viewerScreen.addView(
             bottomPanel,
             FrameLayout.LayoutParams(
@@ -425,11 +427,6 @@ class MainActivity : ComponentActivity() {
                 Gravity.BOTTOM
             )
         )
-    }
-
-    private fun LinearLayout.LayoutParams.marginHorizontalCompat(value: Int) {
-        marginStart = value
-        marginEnd = value
     }
 
     private fun showHomeScreen() {
@@ -477,15 +474,20 @@ class MainActivity : ComponentActivity() {
 
     private fun createCameraSession() {
         stopCurrentSession(clearPairing = true)
+        val generation = sessionGeneration
+
         showCameraScreen()
         cameraStatus.text = "MEMBUAT QR..."
 
         SessionManager.createSession { success, result ->
             runOnUiThread {
+                if (generation != sessionGeneration || isFinishing) return@runOnUiThread
+
                 if (!success) {
                     cameraStatus.text = "GAGAL MEMBUAT QR\n$result"
                     return@runOnUiThread
                 }
+
                 activeCode = result
                 qrImage.setImageBitmap(QrCodeGenerator.generate(result))
                 qrImage.visibility = View.VISIBLE
@@ -494,6 +496,12 @@ class MainActivity : ComponentActivity() {
 
                 viewerListener = SessionManager.listenForViewer(result, this) { joined, message ->
                     runOnUiThread {
+                        if (
+                            generation != sessionGeneration ||
+                            activeCode != result ||
+                            isFinishing
+                        ) return@runOnUiThread
+
                         if (joined && !startingCamera) {
                             startingCamera = true
                             startCameraConnection(result)
@@ -540,7 +548,12 @@ class MainActivity : ComponentActivity() {
 
     private fun joinCameraSession(code: String, restoring: Boolean) {
         stopCurrentSession(clearPairing = !restoring)
+        val generation = sessionGeneration
+
+        activeCode = code
         showViewerScreen()
+        viewerConnectionLabel.text = "● MEMERIKSA"
+        viewerConnectionLabel.setTextColor(mutedColor)
         viewerStatus.text = if (restoring) {
             "MEMULIHKAN PAIRING..."
         } else {
@@ -549,129 +562,253 @@ class MainActivity : ComponentActivity() {
 
         SessionManager.joinSession(code, this) { success, message ->
             runOnUiThread {
-                if (activeCode != null && activeCode != code) return@runOnUiThread
+                if (
+                    generation != sessionGeneration ||
+                    activeCode != code ||
+                    isFinishing
+                ) return@runOnUiThread
+
                 if (!success) {
                     viewerStatus.text = "GAGAL BERGABUNG\n$message"
+                    viewerConnectionLabel.text = "● GAGAL"
+                    viewerConnectionLabel.setTextColor(Color.rgb(255, 110, 110))
+
                     if (restoring && (
                         message.contains("tidak ditemukan", ignoreCase = true) ||
                         message.contains("digunakan perangkat lain", ignoreCase = true) ||
-                        message.contains("pemilik QR tidak lengkap", ignoreCase = true)
+                        message.contains("pemilik QR tidak lengkap", ignoreCase = true) ||
+                        message.contains("masa pairing sudah berakhir", ignoreCase = true)
                     )) {
                         PairingStore.clear(this)
                     }
+
                     activeCode = null
-                    showHomeScreen()
+                    showViewerScreen()
                     return@runOnUiThread
                 }
 
-                activeCode = code
                 try {
                     WebRtcManager.initialize(this)
                     activateAudioOutput()
                     reconnectAttempts = 0
-                    beginViewerAttempt(code)
+                    beginViewerAttempt(code, generation)
                 } catch (e: Exception) {
                     viewerStatus.text = "GAGAL MEMULAI\n${e.message}"
+                    viewerConnectionLabel.text = "● GAGAL"
+                    viewerConnectionLabel.setTextColor(Color.rgb(255, 110, 110))
                 }
             }
         }
     }
 
-    private fun beginViewerAttempt(code: String) {
-        if (activeCode != code) return
+    private fun beginViewerAttempt(
+        code: String,
+        generation: Long = sessionGeneration
+    ) {
+        if (
+            generation != sessionGeneration ||
+            activeCode != code ||
+            isFinishing
+        ) return
+
+        clearViewerMedia()
+        viewerConnectionLabel.text = "● MENYAMBUNG"
+        viewerConnectionLabel.setTextColor(mutedColor)
         viewerStatus.text = "MEMINTA KONEKSI KAMERA..."
 
         WebRtcSignaling.requestConnection(code) { success, attemptId, message ->
             runOnUiThread {
-                if (activeCode != code || isFinishing) return@runOnUiThread
+                if (
+                    generation != sessionGeneration ||
+                    activeCode != code ||
+                    isFinishing
+                ) return@runOnUiThread
+
                 if (!success) {
                     viewerStatus.text = "PERMINTAAN KONEKSI GAGAL\n$message"
-                    scheduleViewerReconnect()
+                    scheduleViewerReconnect(generation)
                     return@runOnUiThread
                 }
 
-                remoteVideoTrack?.let { track ->
-                    nightVisionSink?.let { track.removeSink(it) }
-                }
-                remoteVideoTrack = null
-                remoteAudioTrack?.setEnabled(false)
-                remoteAudioTrack = null
-                webRtcSession?.stop()
-                webRtcSession = null
+                activeAttemptId = attemptId
+                viewerStatus.text = "MENUNGGU MEDIA DARI KAMERA..."
 
-                webRtcSession = WebRtcSession(
+                val session = WebRtcSession(
                     code = code,
                     attemptId = attemptId,
                     isCamera = false,
                     onRemoteTrack = { track: VideoTrack ->
                         runOnUiThread {
-                            if (activeCode != code || isFinishing) return@runOnUiThread
+                            if (
+                                generation != sessionGeneration ||
+                                activeCode != code ||
+                                activeAttemptId != attemptId ||
+                                isFinishing
+                            ) return@runOnUiThread
+
                             remoteVideoTrack?.let { old ->
                                 nightVisionSink?.let { old.removeSink(it) }
                             }
                             remoteVideoTrack = track
                             nightVisionSink?.let { track.addSink(it) }
-                            viewerStatus.text = "VIDEO DITERIMA"
+                            clearConnectionTimeout()
+                            viewerStatus.text = "TRACK VIDEO DITERIMA — MENUNGGU GAMBAR"
                         }
                     },
                     onStatus = { messageText ->
                         runOnUiThread {
-                            if (activeCode != code || isFinishing) return@runOnUiThread
+                            if (
+                                generation != sessionGeneration ||
+                                activeCode != code ||
+                                activeAttemptId != attemptId ||
+                                isFinishing
+                            ) return@runOnUiThread
+
                             viewerStatus.text = messageText
+
                             when {
-                                messageText.contains("WEBRTC: CONNECTED") ||
-                                    messageText.contains("ICE: CONNECTED") ||
-                                    messageText.contains("ICE: COMPLETED") -> {
+                                messageText.contains("WEBRTC: CONNECTED") -> {
+                                    viewerConnectionLabel.text = "● TERHUBUNG"
+                                    viewerConnectionLabel.setTextColor(accentColor)
                                     reconnectAttempts = 0
                                     clearReconnectCallback()
+                                    clearConnectionTimeout()
                                 }
+
                                 messageText.contains("ICE: FAILED") ||
                                     messageText.contains("WEBRTC: FAILED") ||
                                     messageText.contains("WEBRTC: DISCONNECTED") ||
                                     messageText.contains("ICE: DISCONNECTED") ||
                                     messageText.contains("GAGAL MEMBUAT PEER CONNECTION") -> {
-                                    scheduleViewerReconnect()
+                                    viewerConnectionLabel.text = "● TERPUTUS"
+                                    viewerConnectionLabel.setTextColor(Color.rgb(255, 110, 110))
+                                    clearConnectionTimeout()
+                                    scheduleViewerReconnect(generation)
                                 }
                             }
                         }
                     },
                     onRemoteAudioTrack = { track: AudioTrack ->
                         runOnUiThread {
-                            if (activeCode == code && !isFinishing) {
+                            if (
+                                generation == sessionGeneration &&
+                                activeCode == code &&
+                                activeAttemptId == attemptId &&
+                                !isFinishing
+                            ) {
                                 remoteAudioTrack = track
                                 track.setEnabled(audioEnabled)
+                                clearConnectionTimeout()
                             }
                         }
                     }
                 )
-                webRtcSession?.startViewer()
+
+                webRtcSession = session
+                scheduleConnectionTimeout(code, attemptId, generation)
+                session.startViewer()
             }
         }
     }
 
-    private fun scheduleViewerReconnect() {
+    private fun clearViewerMedia() {
+        val oldSession = webRtcSession
+        webRtcSession = null
+        activeAttemptId = null
+
+        remoteVideoTrack?.let { track ->
+            nightVisionSink?.let { track.removeSink(it) }
+        }
+        remoteVideoTrack = null
+
+        remoteAudioTrack?.setEnabled(false)
+        remoteAudioTrack = null
+
+        oldSession?.stop()
+    }
+
+    private fun scheduleConnectionTimeout(
+        code: String,
+        attemptId: String,
+        generation: Long
+    ) {
+        clearConnectionTimeout()
+
+        val timeout = Runnable {
+            connectionTimeoutRunnable = null
+
+            if (
+                generation == sessionGeneration &&
+                activeCode == code &&
+                activeAttemptId == attemptId &&
+                !isFinishing
+            ) {
+                viewerStatus.text = "KAMERA BELUM MENGIRIM MEDIA DALAM 20 DETIK."
+                viewerConnectionLabel.text = "● TIMEOUT"
+                viewerConnectionLabel.setTextColor(Color.rgb(255, 180, 80))
+                scheduleViewerReconnect(generation)
+            }
+        }
+
+        connectionTimeoutRunnable = timeout
+        reconnectHandler.postDelayed(timeout, 20_000L)
+    }
+
+    private fun clearConnectionTimeout() {
+        connectionTimeoutRunnable?.let {
+            reconnectHandler.removeCallbacks(it)
+        }
+        connectionTimeoutRunnable = null
+    }
+
+    private fun scheduleViewerReconnect(
+        generation: Long = sessionGeneration
+    ) {
         val code = activeCode ?: return
-        if (reconnectRunnable != null) return
+
+        if (
+            generation != sessionGeneration ||
+            reconnectRunnable != null ||
+            isFinishing
+        ) return
+
+        clearConnectionTimeout()
+        clearViewerMedia()
+        WebRtcSignaling.clearActiveConnection(code)
+
         if (reconnectAttempts >= 4) {
+            viewerConnectionLabel.text = "● GAGAL"
+            viewerConnectionLabel.setTextColor(Color.rgb(255, 110, 110))
             viewerStatus.text =
                 "KONEKSI BELUM BERHASIL\nPeriksa internet kedua HP. Jaringan tertentu memerlukan server TURN."
             return
         }
 
+        viewerConnectionLabel.text = "● MENYAMBUNG ULANG"
+        viewerConnectionLabel.setTextColor(mutedColor)
         viewerStatus.text = "KONEKSI TERPUTUS — MENCOBA MENYAMBUNG ULANG..."
+
         val retry = Runnable {
             reconnectRunnable = null
-            if (activeCode == code && !isFinishing) {
+
+            if (
+                generation == sessionGeneration &&
+                activeCode == code &&
+                !isFinishing
+            ) {
                 reconnectAttempts++
-                beginViewerAttempt(code)
+                beginViewerAttempt(code, generation)
             }
         }
+
         reconnectRunnable = retry
         reconnectHandler.postDelayed(retry, 2_500L)
     }
 
     private fun clearReconnectCallback() {
-        reconnectRunnable?.let { reconnectHandler.removeCallbacks(it) }
+        reconnectRunnable?.let {
+            reconnectHandler.removeCallbacks(it)
+        }
         reconnectRunnable = null
     }
 
@@ -728,7 +865,9 @@ class MainActivity : ComponentActivity() {
         val code = activeCode
         val savedPairing = PairingStore.get(this)
 
+        sessionGeneration++
         clearReconnectCallback()
+        clearConnectionTimeout()
         reconnectAttempts = 0
 
         if (code != null && viewerListener != null) {
@@ -748,6 +887,7 @@ class MainActivity : ComponentActivity() {
         }
         cameraServiceStarted = false
 
+        activeAttemptId = null
         remoteVideoTrack?.let { track ->
             nightVisionSink?.let { track.removeSink(it) }
         }
@@ -841,8 +981,11 @@ class MainActivity : ComponentActivity() {
         }
         cameraStatusListener = null
 
+        sessionGeneration++
         clearReconnectCallback()
+        clearConnectionTimeout()
         activeCode = null
+        activeAttemptId = null
 
         remoteVideoTrack?.let { track ->
             nightVisionSink?.let { track.removeSink(it) }
