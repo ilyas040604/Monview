@@ -5,13 +5,15 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,12 +28,21 @@ import org.webrtc.VideoTrack
 
 class MainActivity : ComponentActivity() {
 
-    private val gold = Color.rgb(212, 175, 55)
-    private val dark = Color.rgb(10, 10, 10)
+    private val backgroundColor = Color.rgb(8, 12, 18)
+    private val panelColor = Color.rgb(22, 29, 39)
+    private val accentColor = Color.rgb(0, 190, 150)
+    private val whiteColor = Color.WHITE
+    private val mutedColor = Color.rgb(155, 166, 180)
+
+    private lateinit var rootFrame: FrameLayout
+    private lateinit var homeScreen: LinearLayout
+    private lateinit var cameraScreen: LinearLayout
+    private lateinit var viewerScreen: FrameLayout
 
     private lateinit var status: TextView
     private lateinit var qrImage: ImageView
     private lateinit var remoteRenderer: SurfaceViewRenderer
+
     private lateinit var switchCameraButton: Button
     private lateinit var nightVisionButton: Button
     private lateinit var audioButton: Button
@@ -73,143 +84,465 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.statusBarColor = dark
-        window.navigationBarColor = dark
+        window.statusBarColor = backgroundColor
+        window.navigationBarColor = backgroundColor
 
         eglBase = EglBase.create()
 
-        val root = LinearLayout(this).apply {
+        buildHomeScreen()
+        buildCameraScreen()
+        buildViewerScreen()
+
+        rootFrame = FrameLayout(this).apply {
+            setBackgroundColor(backgroundColor)
+            addView(homeScreen, matchParent())
+            addView(cameraScreen, matchParent())
+            addView(viewerScreen, matchParent())
+        }
+
+        showHomeScreen()
+        setContentView(rootFrame)
+    }
+
+    private fun buildHomeScreen() {
+        homeScreen = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(24, 24, 24, 24)
-            setBackgroundColor(dark)
+            setPadding(dp(24), dp(35), dp(24), dp(24))
+            setBackgroundColor(backgroundColor)
         }
 
-        val brand = TextView(this).apply {
-            text = "M W"
-            textSize = 34f
+        val logo = makeText(
+            "MONVIEW",
+            30f,
+            accentColor,
+            true
+        ).apply {
             gravity = Gravity.CENTER
-            setTextColor(gold)
+            letterSpacing = 0.15f
         }
 
-        status = TextView(this).apply {
-            text = "MONVIEW SIAP"
-            textSize = 14f
+        val subtitle = makeText(
+            "PEMANTAU KAMERA JARAK JAUH",
+            11f,
+            mutedColor,
+            false
+        ).apply {
             gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setPadding(16, 20, 16, 20)
+            setPadding(0, dp(8), 0, dp(35))
         }
 
-        qrImage = ImageView(this).apply {
-            visibility = View.GONE
-            adjustViewBounds = true
-        }
-
-        remoteRenderer = SurfaceViewRenderer(this).apply {
-            init(eglBase!!.eglBaseContext, null)
-            setEnableHardwareScaler(true)
-            visibility = View.GONE
-        }
-
-        nightVisionSink = NightVisionVideoSink(remoteRenderer)
-
-        val cameraButton = makeButton("MULAI SEBAGAI KAMERA") {
+        val cameraButton = makeButton(
+            "📷   MULAI SEBAGAI KAMERA",
+            accentColor
+        ) {
             requestCameraPermissions()
         }
 
-        val viewerButton = makeButton("SAMBUNG SEBAGAI PEMANTAU") {
+        val viewerButton = makeButton(
+            "▶   SAMBUNG SEBAGAI PEMANTAU",
+            panelColor
+        ) {
             val options = ScanOptions().apply {
                 setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                 setPrompt("Pindai QR MonView")
                 setBeepEnabled(false)
                 setOrientationLocked(true)
             }
-
             scannerLauncher.launch(options)
         }
 
-        switchCameraButton = makeButton("GANTI KAMERA") {
-            val code = activeCode ?: return@makeButton
+        val info = makeText(
+            "Pilih peran perangkat untuk memulai koneksi.",
+            13f,
+            mutedColor,
+            false
+        ).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(25), dp(12), 0)
+        }
+
+        homeScreen.addView(logo, fullWidth())
+        homeScreen.addView(subtitle, fullWidth())
+        homeScreen.addView(cameraButton, fullWidth())
+        homeScreen.addView(viewerButton, fullWidth())
+        homeScreen.addView(info, fullWidth())
+    }
+
+    private fun buildCameraScreen() {
+        cameraScreen = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(22), dp(28), dp(22), dp(22))
+            setBackgroundColor(backgroundColor)
+            visibility = View.GONE
+        }
+
+        val title = makeText(
+            "MONVIEW CAMERA",
+            23f,
+            accentColor,
+            true
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+
+        status = makeText(
+            "MENYIAPKAN KAMERA...",
+            14f,
+            whiteColor,
+            true
+        ).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(20), dp(12), dp(20))
+        }
+
+        qrImage = ImageView(this).apply {
+            visibility = View.GONE
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+
+        val qrPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            background = roundedBackground(panelColor, 18)
+
+            addView(
+                qrImage,
+                LinearLayout.LayoutParams(dp(230), dp(230))
+            )
+
+            addView(
+                makeText(
+                    "PINDAI QR INI DARI HP PEMANTAU",
+                    12f,
+                    mutedColor,
+                    true
+                ).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(12), 0, 0)
+                },
+                fullWidth()
+            )
+        }
+
+        val stopButton = makeButton(
+            "HENTIKAN KAMERA",
+            Color.rgb(150, 45, 55)
+        ) {
+            stopCurrentSession()
+            showHomeScreen()
+        }
+
+        val backButton = makeButton(
+            "KEMBALI",
+            panelColor
+        ) {
+            showHomeScreen()
+        }
+
+        cameraScreen.addView(title, fullWidth())
+        cameraScreen.addView(status, fullWidth())
+        cameraScreen.addView(qrPanel, fullWidth())
+        cameraScreen.addView(stopButton, fullWidth())
+        cameraScreen.addView(backButton, fullWidth())
+    }
+
+    private fun buildViewerScreen() {
+        viewerScreen = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
+        }
+
+        remoteRenderer = SurfaceViewRenderer(this).apply {
+            init(eglBase!!.eglBaseContext, null)
+            setEnableHardwareScaler(true)
+            setMirror(false)
+            setBackgroundColor(Color.BLACK)
+        }
+
+        nightVisionSink = NightVisionVideoSink(remoteRenderer)
+
+        viewerScreen.addView(
+            remoteRenderer,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        val topPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(22), dp(16), dp(14))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(
+                    Color.rgb(5, 8, 12),
+                    Color.TRANSPARENT
+                )
+            )
+        }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val logo = makeText(
+            "MONVIEW",
+            20f,
+            whiteColor,
+            true
+        )
+
+        val connected = makeText(
+            "● TERHUBUNG",
+            12f,
+            accentColor,
+            true
+        ).apply {
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        header.addView(
+            logo,
+            LinearLayout.LayoutParams(0, dp(36), 1f)
+        )
+        header.addView(connected)
+
+        status = makeText(
+            "MENGHUBUNGKAN KE KAMERA...",
+            12f,
+            whiteColor,
+            true
+        ).apply {
+            setPadding(0, dp(8), 0, 0)
+        }
+
+        topPanel.addView(header, fullWidth())
+        topPanel.addView(status, fullWidth())
+
+        viewerScreen.addView(
+            topPanel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP
+            )
+        )
+
+        val bottomPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(25), dp(12), dp(18))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(
+                    Color.rgb(5, 8, 12),
+                    Color.TRANSPARENT
+                )
+            )
+        }
+
+        val firstRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+
+        audioButton = makeControlButton(
+            "SUARA AKTIF"
+        ) {
+            audioEnabled = !audioEnabled
+            remoteAudioTrack?.setEnabled(audioEnabled)
+            audioButton.text = if (audioEnabled) {
+                "SUARA AKTIF"
+            } else {
+                "SUARA MATI"
+            }
+        }
+
+        switchCameraButton = makeControlButton(
+            "GANTI KAMERA"
+        ) {
+            val code = activeCode ?: return@makeControlButton
 
             WebRtcSignaling.requestCameraSwitch(code) { success, message ->
                 runOnUiThread {
                     status.text = if (success) {
-                        "Perintah ganti kamera terkirim."
+                        "PERINTAH GANTI KAMERA TERKIRIM"
                     } else {
-                        "Gagal: $message"
+                        "GAGAL: $message"
                     }
                 }
             }
-        }.apply {
-            visibility = View.GONE
         }
 
-        nightVisionButton = makeButton("NIGHT VISION: MATI") {
+        firstRow.addView(
+            audioButton,
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(6)
+            }
+        )
+
+        firstRow.addView(
+            switchCameraButton,
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(6)
+            }
+        )
+
+        val secondRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, 0)
+        }
+
+        nightVisionButton = makeControlButton(
+            "NIGHT VISION MATI"
+        ) {
             nightVisionEnabled = !nightVisionEnabled
             nightVisionSink?.setNightVisionEnabled(nightVisionEnabled)
 
             nightVisionButton.text = if (nightVisionEnabled) {
-                "NIGHT VISION: AKTIF"
+                "NIGHT VISION AKTIF"
             } else {
-                "NIGHT VISION: MATI"
+                "NIGHT VISION MATI"
             }
-        }.apply {
-            visibility = View.GONE
         }
 
-        audioButton = makeButton("SUARA HP: AKTIF") {
-            audioEnabled = !audioEnabled
-            remoteAudioTrack?.setEnabled(audioEnabled)
+        val recordButton = makeControlButton("REKAM") {
+            status.text = "FITUR REKAM BELUM TERSEDIA"
+        }.apply {
+            isEnabled = false
+            alpha = 0.45f
+        }
 
-            audioButton.text = if (audioEnabled) {
-                "SUARA HP: AKTIF"
-            } else {
-                "SENYAP: AKTIF"
+        val photoButton = makeControlButton("FOTO") {
+            status.text = "FITUR FOTO BELUM TERSEDIA"
+        }.apply {
+            isEnabled = false
+            alpha = 0.45f
+        }
+
+        secondRow.addView(
+            nightVisionButton,
+            LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                marginEnd = dp(4)
             }
+        )
+
+        secondRow.addView(
+            recordButton,
+            LinearLayout.LayoutParams(0, dp(46), 0.65f).apply {
+                marginHorizontalCompat(dp(4))
+            }
+        )
+
+        secondRow.addView(
+            photoButton,
+            LinearLayout.LayoutParams(0, dp(46), 0.65f).apply {
+                marginStart = dp(4)
+            }
+        )
+
+        val thirdRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, 0)
+        }
+
+        val fullscreenButton = makeControlButton("LAYAR PENUH") {
+            toggleFullscreen()
+        }
+
+        val lockButton = makeControlButton("KUNCI LAYAR") {
+            status.text = "KUNCI SENTUH BELUM TERSEDIA"
         }.apply {
-            visibility = View.GONE
+            isEnabled = false
+            alpha = 0.45f
         }
 
-        val stopButton = makeButton("HENTIKAN KONEKSI") {
-            stopCurrentSession()
-            status.text = "KONEKSI DIHENTIKAN"
+        thirdRow.addView(
+            fullscreenButton,
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                marginEnd = dp(5)
+            }
+        )
+
+        thirdRow.addView(
+            lockButton,
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                marginStart = dp(5)
+            }
+        )
+
+        val stopButton = makeControlButton("PUTUSKAN KONEKSI").apply {
+            setTextColor(Color.rgb(255, 110, 110))
+            setOnClickListener {
+                stopCurrentSession()
+                showHomeScreen()
+            }
         }
 
-        root.addView(brand, fullWidth())
-        root.addView(status, fullWidth())
-        root.addView(qrImage, LinearLayout.LayoutParams(220, 220))
-        root.addView(
-            remoteRenderer,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                360
+        bottomPanel.addView(firstRow, fullWidth())
+        bottomPanel.addView(secondRow, fullWidth())
+        bottomPanel.addView(thirdRow, fullWidth())
+        bottomPanel.addView(
+            stopButton,
+            fullWidth().apply {
+                topMargin = dp(10)
+            }
+        )
+
+        viewerScreen.addView(
+            bottomPanel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
             )
         )
-        root.addView(cameraButton, fullWidth())
-        root.addView(viewerButton, fullWidth())
-        root.addView(switchCameraButton, fullWidth())
-        root.addView(nightVisionButton, fullWidth())
-        root.addView(audioButton, fullWidth())
-        root.addView(stopButton, fullWidth())
-
-        setContentView(ScrollView(this).apply {
-            addView(root)
-        })
     }
 
-    private fun fullWidth() = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        LinearLayout.LayoutParams.WRAP_CONTENT
-    )
+    private fun LinearLayout.LayoutParams.marginHorizontalCompat(
+        value: Int
+    ) {
+        marginStart = value
+        marginEnd = value
+    }
 
-    private fun makeButton(
-        label: String,
-        action: () -> Unit
-    ) = Button(this).apply {
-        text = label
-        setTextColor(gold)
-        setBackgroundColor(Color.rgb(35, 35, 35))
-        setOnClickListener { action() }
+    private fun showHomeScreen() {
+        homeScreen.visibility = View.VISIBLE
+        cameraScreen.visibility = View.GONE
+        viewerScreen.visibility = View.GONE
+        window.decorView.systemUiVisibility = 0
+    }
+
+    private fun showCameraScreen() {
+        homeScreen.visibility = View.GONE
+        cameraScreen.visibility = View.VISIBLE
+        viewerScreen.visibility = View.GONE
+    }
+
+    private fun showViewerScreen() {
+        homeScreen.visibility = View.GONE
+        cameraScreen.visibility = View.GONE
+        viewerScreen.visibility = View.VISIBLE
+    }
+
+    private fun toggleFullscreen() {
+        val current = window.decorView.systemUiVisibility
+
+        window.decorView.systemUiVisibility =
+            if (current and View.SYSTEM_UI_FLAG_FULLSCREEN != 0) {
+                0
+            } else {
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            }
     }
 
     private fun requestCameraPermissions() {
@@ -232,6 +565,7 @@ class MainActivity : ComponentActivity() {
 
     private fun createCameraSession() {
         stopCurrentSession()
+        showCameraScreen()
         status.text = "MEMBUAT QR..."
 
         SessionManager.createSession { success, result ->
@@ -293,20 +627,18 @@ class MainActivity : ComponentActivity() {
 
     private fun joinCameraSession(code: String) {
         stopCurrentSession()
+        showViewerScreen()
         status.text = "MEMERIKSA QR..."
 
         SessionManager.joinSession(code, this) { success, message ->
             runOnUiThread {
                 if (!success) {
                     status.text = "GAGAL BERGABUNG\n$message"
+                    showHomeScreen()
                     return@runOnUiThread
                 }
 
                 activeCode = code
-                remoteRenderer.visibility = View.VISIBLE
-                switchCameraButton.visibility = View.VISIBLE
-                nightVisionButton.visibility = View.VISIBLE
-                audioButton.visibility = View.VISIBLE
 
                 try {
                     WebRtcManager.initialize(this)
@@ -384,13 +716,78 @@ class MainActivity : ComponentActivity() {
         nightVisionSink?.setNightVisionEnabled(false)
 
         qrImage.visibility = View.GONE
-        remoteRenderer.visibility = View.GONE
-        switchCameraButton.visibility = View.GONE
-        nightVisionButton.visibility = View.GONE
-        audioButton.visibility = View.GONE
 
-        nightVisionButton.text = "NIGHT VISION: MATI"
-        audioButton.text = "SUARA HP: AKTIF"
+        nightVisionButton.text = "NIGHT VISION MATI"
+        audioButton.text = "SUARA AKTIF"
+    }
+
+    private fun makeText(
+        value: String,
+        size: Float,
+        color: Int,
+        bold: Boolean
+    ) = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(color)
+        if (bold) {
+            setTypeface(typeface, Typeface.BOLD)
+        }
+    }
+
+    private fun makeButton(
+        label: String,
+        color: Int,
+        action: () -> Unit
+    ) = Button(this).apply {
+        text = label
+        textSize = 14f
+        isAllCaps = false
+        setTextColor(whiteColor)
+        background = roundedBackground(color, 14)
+        setPadding(dp(12), dp(12), dp(12), dp(12))
+        setOnClickListener { action() }
+        val params = fullWidth()
+        params.topMargin = dp(10)
+        layoutParams = params
+    }
+
+    private fun makeControlButton(
+        label: String,
+        action: () -> Unit
+    ) = Button(this).apply {
+        text = label
+        textSize = 11f
+        isAllCaps = false
+        setTextColor(whiteColor)
+        background = roundedBackground(
+            Color.rgb(35, 44, 55),
+            12
+        )
+        setPadding(dp(5), dp(5), dp(5), dp(5))
+        setOnClickListener { action() }
+    }
+
+    private fun roundedBackground(
+        color: Int,
+        radius: Int
+    ) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radius).toFloat()
+    }
+
+    private fun fullWidth() = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT
+    )
+
+    private fun matchParent() = FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams.MATCH_PARENT
+    )
+
+    private fun dp(value: Int): Int {
+        return (value * resources.displayMetrics.density).toInt()
     }
 
     override fun onDestroy() {
@@ -405,8 +802,7 @@ class MainActivity : ComponentActivity() {
 
         viewerListener = null
 
-        // Jangan hentikan MonitorService saat halaman aplikasi ditutup.
-        // Layanan kamera tetap berjalan di latar belakang.
+        // Layanan kamera tidak dihentikan saat Activity ditutup.
 
         remoteAudioTrack?.setEnabled(false)
         remoteAudioTrack = null
