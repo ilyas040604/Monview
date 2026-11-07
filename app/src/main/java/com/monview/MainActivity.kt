@@ -1,12 +1,18 @@
 package com.monview
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -39,10 +45,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var cameraScreen: LinearLayout
     private lateinit var viewerScreen: FrameLayout
 
-    // Status kamera dan pemantau dipisahkan agar tidak saling menimpa.
     private lateinit var cameraStatus: TextView
     private lateinit var viewerStatus: TextView
-
     private lateinit var qrImage: ImageView
     private lateinit var remoteRenderer: SurfaceViewRenderer
 
@@ -53,27 +57,32 @@ class MainActivity : ComponentActivity() {
     private var eglBase: EglBase? = null
     private var webRtcSession: WebRtcSession? = null
     private var viewerListener: ValueEventListener? = null
+    private var cameraStatusListener: ValueEventListener? = null
     private var nightVisionSink: NightVisionVideoSink? = null
     private var remoteAudioTrack: AudioTrack? = null
+    private var remoteVideoTrack: VideoTrack? = null
 
     private var activeCode: String? = null
     private var startingCamera = false
     private var cameraServiceStarted = false
     private var nightVisionEnabled = false
     private var audioEnabled = true
+    private var reconnectAttempts = 0
+    private var reconnectRunnable: Runnable? = null
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+
+    private var previousAudioMode: Int? = null
+    private var previousSpeakerphoneState: Boolean? = null
+    private var previousCommunicationDevice: AudioDeviceInfo? = null
+    private var audioRouteCaptured = false
 
     private val scannerLauncher =
         registerForActivityResult(ScanContract()) { result ->
             val code = result.contents
-
             if (code.isNullOrBlank()) {
-                Toast.makeText(
-                    this,
-                    "Pemindaian QR dibatalkan.",
-                    Toast.LENGTH_SHORT
-                ).show()
+                Toast.makeText(this, "Pemindaian QR dibatalkan.", Toast.LENGTH_SHORT).show()
             } else {
-                joinCameraSession(code.trim())
+                joinCameraSession(code.trim(), restoring = false)
             }
         }
 
@@ -81,10 +90,7 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { results ->
-            if (
-                results.isNotEmpty() &&
-                results.values.all { it }
-            ) {
+            if (results.isNotEmpty() && results.values.all { it }) {
                 createCameraSession()
             } else {
                 Toast.makeText(
@@ -100,7 +106,6 @@ class MainActivity : ComponentActivity() {
 
         window.statusBarColor = backgroundColor
         window.navigationBarColor = backgroundColor
-
         eglBase = EglBase.create()
 
         buildHomeScreen()
@@ -116,6 +121,30 @@ class MainActivity : ComponentActivity() {
 
         showHomeScreen()
         setContentView(rootFrame)
+
+        restoreSavedPairing()
+    }
+
+    private fun restoreSavedPairing() {
+        val pairing = PairingStore.get(this) ?: return
+        activeCode = pairing.pairId
+
+        when (pairing.role) {
+            "camera" -> {
+                showCameraScreen()
+                qrImage.visibility = View.GONE
+                cameraStatus.text = "MEMULIHKAN LAYANAN KAMERA..."
+                startCameraStatusListener(pairing.pairId)
+                startCameraConnection(pairing.pairId)
+            }
+            "viewer" -> {
+                joinCameraSession(pairing.pairId, restoring = true)
+            }
+            else -> {
+                PairingStore.clear(this)
+                activeCode = null
+            }
+        }
     }
 
     private fun buildHomeScreen() {
@@ -126,52 +155,30 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(backgroundColor)
         }
 
-        val logo = makeText(
-            "MONVIEW",
-            30f,
-            accentColor,
-            true
-        ).apply {
+        val logo = makeText("MONVIEW", 30f, accentColor, true).apply {
             gravity = Gravity.CENTER
             letterSpacing = 0.15f
         }
-
         val subtitle = makeText(
-            "PEMANTAU KAMERA JARAK JAUH",
-            11f,
-            mutedColor,
-            false
+            "PEMANTAU KAMERA JARAK JAUH", 11f, mutedColor, false
         ).apply {
             gravity = Gravity.CENTER
             setPadding(0, dp(8), 0, dp(35))
         }
-
-        val cameraButton = makeButton(
-            "📷   MULAI SEBAGAI KAMERA",
-            accentColor
-        ) {
+        val cameraButton = makeButton("📷   MULAI SEBAGAI KAMERA", accentColor) {
             requestCameraPermissions()
         }
-
-        val viewerButton = makeButton(
-            "▶   SAMBUNG SEBAGAI PEMANTAU",
-            panelColor
-        ) {
+        val viewerButton = makeButton("▶   SAMBUNG SEBAGAI PEMANTAU", panelColor) {
             val options = ScanOptions().apply {
                 setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                 setPrompt("Pindai QR MonView")
                 setBeepEnabled(false)
                 setOrientationLocked(true)
             }
-
             scannerLauncher.launch(options)
         }
-
         val info = makeText(
-            "Pilih peran perangkat untuk memulai koneksi.",
-            13f,
-            mutedColor,
-            false
+            "Pilih peran perangkat untuk memulai koneksi.", 13f, mutedColor, false
         ).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(25), dp(12), 0)
@@ -193,25 +200,13 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
         }
 
-        val title = makeText(
-            "MONVIEW CAMERA",
-            23f,
-            accentColor,
-            true
-        ).apply {
+        val title = makeText("MONVIEW CAMERA", 23f, accentColor, true).apply {
             gravity = Gravity.CENTER
         }
-
-        cameraStatus = makeText(
-            "MENYIAPKAN KAMERA...",
-            14f,
-            whiteColor,
-            true
-        ).apply {
+        cameraStatus = makeText("MENYIAPKAN KAMERA...", 14f, whiteColor, true).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(20), dp(12), dp(20))
         }
-
         qrImage = ImageView(this).apply {
             visibility = View.GONE
             adjustViewBounds = true
@@ -223,19 +218,9 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER
             setPadding(dp(18), dp(18), dp(18), dp(18))
             background = roundedBackground(panelColor, 18)
-
+            addView(qrImage, LinearLayout.LayoutParams(dp(230), dp(230)))
             addView(
-                qrImage,
-                LinearLayout.LayoutParams(dp(230), dp(230))
-            )
-
-            addView(
-                makeText(
-                    "PINDAI QR INI DARI HP PEMANTAU",
-                    12f,
-                    mutedColor,
-                    true
-                ).apply {
+                makeText("PINDAI QR INI DARI HP PEMANTAU", 12f, mutedColor, true).apply {
                     gravity = Gravity.CENTER
                     setPadding(0, dp(12), 0, 0)
                 },
@@ -243,18 +228,11 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        val stopButton = makeButton(
-            "HENTIKAN KAMERA",
-            Color.rgb(150, 45, 55)
-        ) {
-            stopCurrentSession()
+        val stopButton = makeButton("HENTIKAN KAMERA", Color.rgb(150, 45, 55)) {
+            stopCurrentSession(clearPairing = true)
             showHomeScreen()
         }
-
-        val backButton = makeButton(
-            "KEMBALI",
-            panelColor
-        ) {
+        val backButton = makeButton("KEMBALI", panelColor) {
             showHomeScreen()
         }
 
@@ -277,7 +255,6 @@ class MainActivity : ComponentActivity() {
             setMirror(false)
             setBackgroundColor(Color.BLACK)
         }
-
         nightVisionSink = NightVisionVideoSink(remoteRenderer)
 
         viewerScreen.addView(
@@ -293,53 +270,27 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(16), dp(22), dp(16), dp(14))
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(
-                    Color.rgb(5, 8, 12),
-                    Color.TRANSPARENT
-                )
+                intArrayOf(Color.rgb(5, 8, 12), Color.TRANSPARENT)
             )
         }
-
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-
-        val logo = makeText(
-            "MONVIEW",
-            20f,
-            whiteColor,
-            true
-        )
-
-        val connected = makeText(
-            "● TERHUBUNG",
-            12f,
-            accentColor,
-            true
-        ).apply {
+        val logo = makeText("MONVIEW", 20f, whiteColor, true)
+        val connected = makeText("● TERHUBUNG", 12f, accentColor, true).apply {
             gravity = Gravity.CENTER_VERTICAL
         }
-
-        header.addView(
-            logo,
-            LinearLayout.LayoutParams(0, dp(36), 1f)
-        )
-
+        header.addView(logo, LinearLayout.LayoutParams(0, dp(36), 1f))
         header.addView(connected)
 
         viewerStatus = makeText(
-            "MENGHUBUNGKAN KE KAMERA...",
-            12f,
-            whiteColor,
-            true
+            "MENGHUBUNGKAN KE KAMERA...", 12f, whiteColor, true
         ).apply {
             setPadding(0, dp(8), 0, 0)
         }
-
         topPanel.addView(header, fullWidth())
         topPanel.addView(viewerStatus, fullWidth())
-
         viewerScreen.addView(
             topPanel,
             FrameLayout.LayoutParams(
@@ -355,10 +306,7 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(12), dp(25), dp(12), dp(18))
             background = GradientDrawable(
                 GradientDrawable.Orientation.BOTTOM_TOP,
-                intArrayOf(
-                    Color.rgb(5, 8, 12),
-                    Color.TRANSPARENT
-                )
+                intArrayOf(Color.rgb(5, 8, 12), Color.TRANSPARENT)
             )
         }
 
@@ -366,25 +314,14 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-
         audioButton = makeControlButton("SUARA AKTIF") {
             audioEnabled = !audioEnabled
-
             remoteAudioTrack?.setEnabled(audioEnabled)
-
-            audioButton.text = if (audioEnabled) {
-                "SUARA AKTIF"
-            } else {
-                "SUARA MATI"
-            }
+            audioButton.text = if (audioEnabled) "SUARA AKTIF" else "SUARA MATI"
         }
-
         switchCameraButton = makeControlButton("GANTI KAMERA") {
             val code = activeCode ?: return@makeControlButton
-
-            WebRtcSignaling.requestCameraSwitch(code) {
-                    success, message ->
-
+            WebRtcSignaling.requestCameraSwitch(code) { success, message ->
                 runOnUiThread {
                     viewerStatus.text = if (success) {
                         "PERINTAH GANTI KAMERA TERKIRIM"
@@ -394,19 +331,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-
         firstRow.addView(
             audioButton,
-            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
-                marginEnd = dp(6)
-            }
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) }
         )
-
         firstRow.addView(
             switchCameraButton,
-            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
-                marginStart = dp(6)
-            }
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6) }
         )
 
         val secondRow = LinearLayout(this).apply {
@@ -414,52 +345,41 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER
             setPadding(0, dp(10), 0, 0)
         }
-
         nightVisionButton = makeControlButton("NIGHT VISION MATI") {
             nightVisionEnabled = !nightVisionEnabled
-
             nightVisionSink?.setNightVisionEnabled(nightVisionEnabled)
-
             nightVisionButton.text = if (nightVisionEnabled) {
                 "NIGHT VISION AKTIF"
             } else {
                 "NIGHT VISION MATI"
             }
         }
-
         val recordButton = makeControlButton("REKAM") {
             viewerStatus.text = "FITUR REKAM BELUM TERSEDIA"
         }.apply {
             isEnabled = false
             alpha = 0.45f
         }
-
         val photoButton = makeControlButton("FOTO") {
             viewerStatus.text = "FITUR FOTO BELUM TERSEDIA"
         }.apply {
             isEnabled = false
             alpha = 0.45f
         }
-
         secondRow.addView(
             nightVisionButton,
-            LinearLayout.LayoutParams(0, dp(46), 1f).apply {
-                marginEnd = dp(4)
-            }
+            LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(4) }
         )
-
         secondRow.addView(
             recordButton,
             LinearLayout.LayoutParams(0, dp(46), 0.65f).apply {
-                marginHorizontalCompat(dp(4))
+                marginStart = dp(4)
+                marginEnd = dp(4)
             }
         )
-
         secondRow.addView(
             photoButton,
-            LinearLayout.LayoutParams(0, dp(46), 0.65f).apply {
-                marginStart = dp(4)
-            }
+            LinearLayout.LayoutParams(0, dp(46), 0.65f).apply { marginStart = dp(4) }
         )
 
         val thirdRow = LinearLayout(this).apply {
@@ -467,35 +387,24 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER
             setPadding(0, dp(10), 0, 0)
         }
-
-        val fullscreenButton = makeControlButton("LAYAR PENUH") {
-            toggleFullscreen()
-        }
-
+        val fullscreenButton = makeControlButton("LAYAR PENUH") { toggleFullscreen() }
         val lockButton = makeControlButton("KUNCI LAYAR") {
             viewerStatus.text = "KUNCI SENTUH BELUM TERSEDIA"
         }.apply {
             isEnabled = false
             alpha = 0.45f
         }
-
         thirdRow.addView(
             fullscreenButton,
-            LinearLayout.LayoutParams(0, dp(44), 1f).apply {
-                marginEnd = dp(5)
-            }
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(5) }
         )
-
         thirdRow.addView(
             lockButton,
-            LinearLayout.LayoutParams(0, dp(44), 1f).apply {
-                marginStart = dp(5)
-            }
+            LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(5) }
         )
 
-        // Tombol ini wajib memberikan action saat dibuat.
         val stopButton = makeControlButton("PUTUSKAN KONEKSI") {
-            stopCurrentSession()
+            stopCurrentSession(clearPairing = true)
             showHomeScreen()
         }.apply {
             setTextColor(Color.rgb(255, 110, 110))
@@ -504,14 +413,10 @@ class MainActivity : ComponentActivity() {
         bottomPanel.addView(firstRow, fullWidth())
         bottomPanel.addView(secondRow, fullWidth())
         bottomPanel.addView(thirdRow, fullWidth())
-
         bottomPanel.addView(
             stopButton,
-            fullWidth().apply {
-                topMargin = dp(10)
-            }
+            fullWidth().apply { topMargin = dp(10) }
         )
-
         viewerScreen.addView(
             bottomPanel,
             FrameLayout.LayoutParams(
@@ -522,9 +427,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun LinearLayout.LayoutParams.marginHorizontalCompat(
-        value: Int
-    ) {
+    private fun LinearLayout.LayoutParams.marginHorizontalCompat(value: Int) {
         marginStart = value
         marginEnd = value
     }
@@ -550,7 +453,6 @@ class MainActivity : ComponentActivity() {
 
     private fun toggleFullscreen() {
         val current = window.decorView.systemUiVisibility
-
         window.decorView.systemUiVisibility =
             if (current and View.SYSTEM_UI_FLAG_FULLSCREEN != 0) {
                 0
@@ -566,23 +468,16 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.CAMERA,
             Manifest.permission.RECORD_AUDIO
         )
-
         val missing = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) !=
-                PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-
-        if (missing.isEmpty()) {
-            createCameraSession()
-        } else {
-            permissionLauncher.launch(missing.toTypedArray())
-        }
+        if (missing.isEmpty()) createCameraSession()
+        else permissionLauncher.launch(missing.toTypedArray())
     }
 
     private fun createCameraSession() {
-        stopCurrentSession()
+        stopCurrentSession(clearPairing = true)
         showCameraScreen()
-
         cameraStatus.text = "MEMBUAT QR..."
 
         SessionManager.createSession { success, result ->
@@ -591,237 +486,335 @@ class MainActivity : ComponentActivity() {
                     cameraStatus.text = "GAGAL MEMBUAT QR\n$result"
                     return@runOnUiThread
                 }
-
                 activeCode = result
-
-                qrImage.setImageBitmap(
-                    QrCodeGenerator.generate(result)
-                )
-
+                qrImage.setImageBitmap(QrCodeGenerator.generate(result))
                 qrImage.visibility = View.VISIBLE
+                cameraStatus.text = "MENUNGGU HP PEMANTAU\nQR berlaku 5 menit."
+                startCameraStatusListener(result)
 
-                cameraStatus.text =
-                    "MENUNGGU HP PEMANTAU\nQR berlaku 5 menit."
-
-                viewerListener =
-                    SessionManager.listenForViewer(
-                        result,
-                        this
-                    ) { joined, message ->
-
-                        runOnUiThread {
-                            if (joined && !startingCamera) {
-                                startingCamera = true
-                                startCameraConnection(result)
-                            } else if (!joined) {
-                                cameraStatus.text = message
-                            }
+                viewerListener = SessionManager.listenForViewer(result, this) { joined, message ->
+                    runOnUiThread {
+                        if (joined && !startingCamera) {
+                            startingCamera = true
+                            startCameraConnection(result)
+                        } else if (!joined) {
+                            cameraStatus.text = message
                         }
                     }
+                }
+            }
+        }
+    }
+
+    private fun startCameraStatusListener(code: String) {
+        cameraStatusListener?.let {
+            WebRtcSignaling.removeCameraStatusListener(code, it)
+        }
+        cameraStatusListener = WebRtcSignaling.listenCameraStatus(code) { message ->
+            runOnUiThread {
+                if (activeCode == code && !isFinishing) cameraStatus.text = message
             }
         }
     }
 
     private fun startCameraConnection(code: String) {
         cameraStatus.text = "MENYIAPKAN LAYANAN KAMERA..."
-
         try {
-            val intent = Intent(
-                this,
-                MonitorService::class.java
-            ).apply {
+            val intent = Intent(this, MonitorService::class.java).apply {
                 action = MonitorService.ACTION_START
                 putExtra("session_code", code)
             }
-
             ContextCompat.startForegroundService(this, intent)
-
             cameraServiceStarted = true
 
             viewerListener?.let {
                 SessionManager.removeViewerListener(code, it)
             }
-
             viewerListener = null
-
-            cameraStatus.text =
-                "KAMERA AKTIF\nLayanan latar belakang dijalankan."
-
         } catch (e: Exception) {
             startingCamera = false
             cameraServiceStarted = false
-
-            cameraStatus.text =
-                "GAGAL MENJALANKAN LAYANAN\n${e.message}"
+            cameraStatus.text = "GAGAL MENJALANKAN LAYANAN\n${e.message}"
         }
     }
 
-    private fun joinCameraSession(code: String) {
-        stopCurrentSession()
+    private fun joinCameraSession(code: String, restoring: Boolean) {
+        stopCurrentSession(clearPairing = !restoring)
         showViewerScreen()
-
-        viewerStatus.text = "MEMERIKSA QR..."
+        viewerStatus.text = if (restoring) {
+            "MEMULIHKAN PAIRING..."
+        } else {
+            "MEMERIKSA QR..."
+        }
 
         SessionManager.joinSession(code, this) { success, message ->
             runOnUiThread {
+                if (activeCode != null && activeCode != code) return@runOnUiThread
                 if (!success) {
                     viewerStatus.text = "GAGAL BERGABUNG\n$message"
+                    if (restoring && (
+                        message.contains("tidak ditemukan", ignoreCase = true) ||
+                        message.contains("digunakan perangkat lain", ignoreCase = true) ||
+                        message.contains("pemilik QR tidak lengkap", ignoreCase = true)
+                    )) {
+                        PairingStore.clear(this)
+                    }
+                    activeCode = null
                     showHomeScreen()
                     return@runOnUiThread
                 }
 
                 activeCode = code
-
                 try {
                     WebRtcManager.initialize(this)
-
-                    webRtcSession = WebRtcSession(
-                        code = code,
-                        isCamera = false,
-
-                        onRemoteTrack = { track: VideoTrack ->
-                            runOnUiThread {
-                                nightVisionSink?.let {
-                                    track.addSink(it)
-                                }
-
-                                viewerStatus.text = "VIDEO DITERIMA"
-                            }
-                        },
-
-                        onStatus = { messageText ->
-                            runOnUiThread {
-                                viewerStatus.text = messageText
-                            }
-                        },
-
-                        onRemoteAudioTrack = { track: AudioTrack ->
-                            runOnUiThread {
-                                remoteAudioTrack = track
-                                track.setEnabled(audioEnabled)
-                            }
-                        }
-                    )
-
-                    webRtcSession?.startViewer()
-
-                    viewerStatus.text = "TERHUBUNG\nMenunggu video..."
-
+                    activateAudioOutput()
+                    reconnectAttempts = 0
+                    beginViewerAttempt(code)
                 } catch (e: Exception) {
-                    viewerStatus.text =
-                        "GAGAL MEMULAI\n${e.message}"
+                    viewerStatus.text = "GAGAL MEMULAI\n${e.message}"
                 }
             }
         }
     }
 
-    private fun stopCurrentSession() {
+    private fun beginViewerAttempt(code: String) {
+        if (activeCode != code) return
+        viewerStatus.text = "MEMINTA KONEKSI KAMERA..."
+
+        WebRtcSignaling.requestConnection(code) { success, attemptId, message ->
+            runOnUiThread {
+                if (activeCode != code || isFinishing) return@runOnUiThread
+                if (!success) {
+                    viewerStatus.text = "PERMINTAAN KONEKSI GAGAL\n$message"
+                    scheduleViewerReconnect()
+                    return@runOnUiThread
+                }
+
+                remoteVideoTrack?.let { track ->
+                    nightVisionSink?.let { track.removeSink(it) }
+                }
+                remoteVideoTrack = null
+                remoteAudioTrack?.setEnabled(false)
+                remoteAudioTrack = null
+                webRtcSession?.stop()
+                webRtcSession = null
+
+                webRtcSession = WebRtcSession(
+                    code = code,
+                    attemptId = attemptId,
+                    isCamera = false,
+                    onRemoteTrack = { track: VideoTrack ->
+                        runOnUiThread {
+                            if (activeCode != code || isFinishing) return@runOnUiThread
+                            remoteVideoTrack?.let { old ->
+                                nightVisionSink?.let { old.removeSink(it) }
+                            }
+                            remoteVideoTrack = track
+                            nightVisionSink?.let { track.addSink(it) }
+                            viewerStatus.text = "VIDEO DITERIMA"
+                        }
+                    },
+                    onStatus = { messageText ->
+                        runOnUiThread {
+                            if (activeCode != code || isFinishing) return@runOnUiThread
+                            viewerStatus.text = messageText
+                            when {
+                                messageText.contains("WEBRTC: CONNECTED") ||
+                                    messageText.contains("ICE: CONNECTED") ||
+                                    messageText.contains("ICE: COMPLETED") -> {
+                                    reconnectAttempts = 0
+                                    clearReconnectCallback()
+                                }
+                                messageText.contains("ICE: FAILED") ||
+                                    messageText.contains("WEBRTC: FAILED") ||
+                                    messageText.contains("WEBRTC: DISCONNECTED") ||
+                                    messageText.contains("ICE: DISCONNECTED") ||
+                                    messageText.contains("GAGAL MEMBUAT PEER CONNECTION") -> {
+                                    scheduleViewerReconnect()
+                                }
+                            }
+                        }
+                    },
+                    onRemoteAudioTrack = { track: AudioTrack ->
+                        runOnUiThread {
+                            if (activeCode == code && !isFinishing) {
+                                remoteAudioTrack = track
+                                track.setEnabled(audioEnabled)
+                            }
+                        }
+                    }
+                )
+                webRtcSession?.startViewer()
+            }
+        }
+    }
+
+    private fun scheduleViewerReconnect() {
+        val code = activeCode ?: return
+        if (reconnectRunnable != null) return
+        if (reconnectAttempts >= 4) {
+            viewerStatus.text =
+                "KONEKSI BELUM BERHASIL\nPeriksa internet kedua HP. Jaringan tertentu memerlukan server TURN."
+            return
+        }
+
+        viewerStatus.text = "KONEKSI TERPUTUS — MENCOBA MENYAMBUNG ULANG..."
+        val retry = Runnable {
+            reconnectRunnable = null
+            if (activeCode == code && !isFinishing) {
+                reconnectAttempts++
+                beginViewerAttempt(code)
+            }
+        }
+        reconnectRunnable = retry
+        reconnectHandler.postDelayed(retry, 2_500L)
+    }
+
+    private fun clearReconnectCallback() {
+        reconnectRunnable?.let { reconnectHandler.removeCallbacks(it) }
+        reconnectRunnable = null
+    }
+
+    private fun activateAudioOutput() {
+        val manager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (!audioRouteCaptured) {
+            previousAudioMode = manager.mode
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                previousCommunicationDevice = manager.communicationDevice
+            } else {
+                @Suppress("DEPRECATION")
+                previousSpeakerphoneState = manager.isSpeakerphoneOn
+            }
+            audioRouteCaptured = true
+        }
+
+        manager.mode = AudioManager.MODE_IN_COMMUNICATION
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val speaker = manager.availableCommunicationDevices.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            }
+            if (speaker != null) {
+                manager.setCommunicationDevice(speaker)
+            } else {
+                @Suppress("DEPRECATION")
+                manager.isSpeakerphoneOn = true
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            manager.isSpeakerphoneOn = true
+        }
+    }
+
+    private fun restoreAudioOutput() {
+        if (!audioRouteCaptured) return
+        val manager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            manager.clearCommunicationDevice()
+            previousCommunicationDevice?.let { manager.setCommunicationDevice(it) }
+        } else {
+            previousSpeakerphoneState?.let {
+                @Suppress("DEPRECATION")
+                manager.isSpeakerphoneOn = it
+            }
+        }
+        previousAudioMode?.let { manager.mode = it }
+        previousAudioMode = null
+        previousSpeakerphoneState = null
+        previousCommunicationDevice = null
+        audioRouteCaptured = false
+    }
+
+    private fun stopCurrentSession(clearPairing: Boolean = false) {
         val code = activeCode
+        val savedPairing = PairingStore.get(this)
+
+        clearReconnectCallback()
+        reconnectAttempts = 0
 
         if (code != null && viewerListener != null) {
-            SessionManager.removeViewerListener(
-                code,
-                viewerListener!!
-            )
+            SessionManager.removeViewerListener(code, viewerListener!!)
         }
-
         viewerListener = null
 
-        if (cameraServiceStarted) {
-            val intent = Intent(
-                this,
-                MonitorService::class.java
-            ).apply {
-                action = MonitorService.ACTION_STOP
-            }
-
-            startService(intent)
+        if (clearPairing && savedPairing?.role == "viewer" && code != null) {
+            WebRtcSignaling.clearActiveConnection(code)
         }
 
+        if (cameraServiceStarted || (clearPairing && savedPairing?.role == "camera")) {
+            val intent = Intent(this, MonitorService::class.java).apply {
+                action = MonitorService.ACTION_STOP
+            }
+            startService(intent)
+        }
         cameraServiceStarted = false
 
+        remoteVideoTrack?.let { track ->
+            nightVisionSink?.let { track.removeSink(it) }
+        }
+        remoteVideoTrack = null
         remoteAudioTrack?.setEnabled(false)
         remoteAudioTrack = null
 
+        activeCode = null
         webRtcSession?.stop()
         webRtcSession = null
 
-        activeCode = null
+        restoreAudioOutput()
         startingCamera = false
         audioEnabled = true
         nightVisionEnabled = false
-
         nightVisionSink?.setNightVisionEnabled(false)
 
-        qrImage.visibility = View.GONE
+        cameraStatusListener?.let { listener ->
+            code?.let { WebRtcSignaling.removeCameraStatusListener(it, listener) }
+        }
+        cameraStatusListener = null
 
+        qrImage.visibility = View.GONE
         nightVisionButton.text = "NIGHT VISION MATI"
         audioButton.text = "SUARA AKTIF"
+
+        if (clearPairing) PairingStore.clear(this)
     }
 
-    private fun makeText(
-        value: String,
-        size: Float,
-        color: Int,
-        bold: Boolean
-    ) = TextView(this).apply {
-        text = value
-        textSize = size
-        setTextColor(color)
-
-        if (bold) {
-            setTypeface(typeface, Typeface.BOLD)
-        }
-    }
-
-    private fun makeButton(
-        label: String,
-        color: Int,
-        action: () -> Unit
-    ) = Button(this).apply {
-        text = label
-        textSize = 14f
-        isAllCaps = false
-        setTextColor(whiteColor)
-        background = roundedBackground(color, 14)
-        setPadding(dp(12), dp(12), dp(12), dp(12))
-        setOnClickListener {
-            action()
+    private fun makeText(value: String, size: Float, color: Int, bold: Boolean) =
+        TextView(this).apply {
+            text = value
+            textSize = size
+            setTextColor(color)
+            if (bold) setTypeface(typeface, Typeface.BOLD)
         }
 
-        val params = fullWidth()
-        params.topMargin = dp(10)
-        layoutParams = params
-    }
-
-    private fun makeControlButton(
-        label: String,
-        action: () -> Unit
-    ) = Button(this).apply {
-        text = label
-        textSize = 11f
-        isAllCaps = false
-        setTextColor(whiteColor)
-
-        background = roundedBackground(
-            Color.rgb(35, 44, 55),
-            12
-        )
-
-        setPadding(dp(5), dp(5), dp(5), dp(5))
-
-        setOnClickListener {
-            action()
+    private fun makeButton(label: String, color: Int, action: () -> Unit) =
+        Button(this).apply {
+            text = label
+            textSize = 14f
+            isAllCaps = false
+            setTextColor(whiteColor)
+            background = roundedBackground(color, 14)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setOnClickListener { action() }
+            val params = fullWidth()
+            params.topMargin = dp(10)
+            layoutParams = params
         }
-    }
 
-    private fun roundedBackground(
-        color: Int,
-        radius: Int
-    ) = GradientDrawable().apply {
-        setColor(color)
-        cornerRadius = dp(radius).toFloat()
-    }
+    private fun makeControlButton(label: String, action: () -> Unit) =
+        Button(this).apply {
+            text = label
+            textSize = 11f
+            isAllCaps = false
+            setTextColor(whiteColor)
+            background = roundedBackground(Color.rgb(35, 44, 55), 12)
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            setOnClickListener { action() }
+        }
+
+    private fun roundedBackground(color: Int, radius: Int) =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
+        }
 
     private fun fullWidth() = LinearLayout.LayoutParams(
         LinearLayout.LayoutParams.MATCH_PARENT,
@@ -833,37 +826,39 @@ class MainActivity : ComponentActivity() {
         FrameLayout.LayoutParams.MATCH_PARENT
     )
 
-    private fun dp(value: Int): Int {
-        return (
-            value * resources.displayMetrics.density
-        ).toInt()
-    }
+    private fun dp(value: Int): Int =
+        (value * resources.displayMetrics.density).toInt()
 
     override fun onDestroy() {
         val code = activeCode
-
         if (code != null && viewerListener != null) {
-            SessionManager.removeViewerListener(
-                code,
-                viewerListener!!
-            )
+            SessionManager.removeViewerListener(code, viewerListener!!)
         }
-
         viewerListener = null
 
-        // Layanan kamera tidak dihentikan saat Activity ditutup.
+        if (code != null && cameraStatusListener != null) {
+            WebRtcSignaling.removeCameraStatusListener(code, cameraStatusListener!!)
+        }
+        cameraStatusListener = null
 
+        clearReconnectCallback()
+        activeCode = null
+
+        remoteVideoTrack?.let { track ->
+            nightVisionSink?.let { track.removeSink(it) }
+        }
+        remoteVideoTrack = null
         remoteAudioTrack?.setEnabled(false)
         remoteAudioTrack = null
-
         webRtcSession?.stop()
         webRtcSession = null
 
+        restoreAudioOutput()
         remoteRenderer.release()
-
         eglBase?.release()
         eglBase = null
 
+        // Pairing lokal dan layanan kamera sengaja dipertahankan agar bisa dipulihkan.
         super.onDestroy()
     }
 }
