@@ -1,4 +1,3 @@
-
 package com.monview
 
 import com.google.firebase.database.ChildEventListener
@@ -17,12 +16,15 @@ import org.webrtc.VideoTrack
 
 class WebRtcSession(
     private val code: String,
+    private val attemptId: String,
     private val isCamera: Boolean,
     private val onRemoteTrack: (VideoTrack) -> Unit,
     private val onStatus: (String) -> Unit,
     private val onRemoteAudioTrack: (AudioTrack) -> Unit = {}
 ) {
+
     private var peerConnection: PeerConnection? = null
+
     private var answerListener: ValueEventListener? = null
     private var offerListener: ValueEventListener? = null
     private var candidateListener: ChildEventListener? = null
@@ -31,6 +33,9 @@ class WebRtcSession(
     private val deliveredTrackIds = mutableSetOf<String>()
 
     private var remoteDescriptionReady = false
+    private var offerProcessing = false
+    private var answerProcessing = false
+    private var stopped = false
 
     private fun deliverTrack(track: MediaStreamTrack?) {
         when (track) {
@@ -57,49 +62,60 @@ class WebRtcSession(
         override fun onSignalingChange(
             state: PeerConnection.SignalingState
         ) {
-            onStatus("Signaling: $state")
+            if (!stopped) onStatus("SIGNALING: $state")
         }
 
         override fun onIceConnectionChange(
             state: PeerConnection.IceConnectionState
         ) {
-            onStatus("ICE: $state")
+            if (!stopped) onStatus("ICE: $state")
         }
 
         override fun onConnectionChange(
             state: PeerConnection.PeerConnectionState
         ) {
-            onStatus("WEBRTC: $state")
+            if (!stopped) onStatus("WEBRTC: $state")
         }
 
         override fun onIceConnectionReceivingChange(
             receiving: Boolean
         ) {
-            onStatus(
-                if (receiving) "MENERIMA DATA ICE"
-                else "BELUM MENERIMA DATA ICE"
-            )
+            if (!stopped) {
+                onStatus(
+                    if (receiving) {
+                        "MENERIMA DATA ICE"
+                    } else {
+                        "BELUM MENERIMA DATA ICE"
+                    }
+                )
+            }
         }
 
         override fun onIceGatheringChange(
             state: PeerConnection.IceGatheringState
         ) {
-            onStatus("Pengumpulan ICE: $state")
+            if (!stopped) onStatus("ICE GATHERING: $state")
         }
 
         override fun onIceCandidate(candidate: IceCandidate) {
-            WebRtcSignaling.sendCandidate(
-                code,
-                candidate,
-                isCamera
-            )
+            if (!stopped) {
+                WebRtcSignaling.sendCandidate(
+                    code,
+                    attemptId,
+                    candidate,
+                    isCamera
+                )
+            }
         }
 
         override fun onIceCandidatesRemoved(
             candidates: Array<IceCandidate>
-        ) {}
+        ) {
+        }
 
         override fun onAddStream(stream: MediaStream) {
+            if (stopped) return
+
             stream.videoTracks.firstOrNull()?.let {
                 deliverTrack(it)
             }
@@ -109,58 +125,93 @@ class WebRtcSession(
             }
         }
 
-        override fun onRemoveStream(stream: MediaStream) {}
+        override fun onRemoveStream(stream: MediaStream) {
+        }
 
         override fun onDataChannel(
             dataChannel: org.webrtc.DataChannel
-        ) {}
+        ) {
+        }
 
         override fun onRenegotiationNeeded() {
-            onStatus("Negosiasi ulang diperlukan")
+            if (!stopped) onStatus("NEGOSIASI ULANG DIPERLUKAN")
         }
 
         override fun onAddTrack(
             receiver: RtpReceiver,
             mediaStreams: Array<MediaStream>
         ) {
-            deliverTrack(receiver.track())
+            if (!stopped) deliverTrack(receiver.track())
         }
 
         override fun onTrack(transceiver: RtpTransceiver) {
-            deliverTrack(transceiver.receiver.track())
+            if (!stopped) {
+                deliverTrack(transceiver.receiver.track())
+            }
         }
     }
 
     private fun addRemoteCandidate(candidate: IceCandidate) {
+        if (stopped) return
+
         val connection = peerConnection ?: return
 
         if (remoteDescriptionReady) {
-            connection.addIceCandidate(candidate)
+            val accepted = connection.addIceCandidate(candidate)
+
+            if (!accepted) {
+                onStatus("ICE CANDIDATE GAGAL DITAMBAHKAN")
+            }
         } else {
             pendingCandidates.add(candidate)
         }
     }
 
     private fun flushPendingCandidates() {
+        if (stopped) return
+
         val connection = peerConnection ?: return
 
         remoteDescriptionReady = true
 
-        pendingCandidates.forEach {
-            connection.addIceCandidate(it)
-        }
-
-        val count = pendingCandidates.size
+        val candidates = pendingCandidates.toList()
         pendingCandidates.clear()
 
-        onStatus("Deskripsi diterima. ICE kandidat: $count")
+        var acceptedCount = 0
+
+        candidates.forEach { candidate ->
+            if (connection.addIceCandidate(candidate)) {
+                acceptedCount++
+            }
+        }
+
+        onStatus(
+            "REMOTE DESCRIPTION SIAP — $acceptedCount/${candidates.size} ICE DITERIMA"
+        )
+    }
+
+    private fun createCandidateListener() {
+        candidateListener = WebRtcSignaling.listenCandidates(
+            code,
+            attemptId,
+            isCamera,
+            { candidate ->
+                addRemoteCandidate(candidate)
+            },
+            { error ->
+                if (!stopped) {
+                    onStatus("ICE LISTENER ERROR: $error")
+                }
+            }
+        )
     }
 
     fun startCamera(stream: CameraStream) {
-        if (!isCamera || peerConnection != null) return
+        if (!isCamera || peerConnection != null || stopped) return
 
-        val connection =
-            WebRtcManager.createPeerConnection(observer)
+        onStatus("MENYIAPKAN PEER CONNECTION KAMERA")
+
+        val connection = WebRtcManager.createPeerConnection(observer)
 
         if (connection == null) {
             onStatus("GAGAL MEMBUAT PEER CONNECTION")
@@ -173,67 +224,105 @@ class WebRtcSession(
         val audio = stream.audioTrack
 
         if (video == null || audio == null) {
-            onStatus("TRACK KAMERA ATAU MIKROFON KOSONG")
+            onStatus("TRACK VIDEO ATAU AUDIO KOSONG")
             return
         }
 
         video.setEnabled(true)
         audio.setEnabled(true)
 
-        connection.addTrack(video, listOf("monview_stream"))
-        connection.addTrack(audio, listOf("monview_stream"))
+        val videoSender = connection.addTrack(
+            video,
+            listOf("monview_stream")
+        )
 
-        onStatus("VIDEO DAN AUDIO DITAMBAHKAN")
+        val audioSender = connection.addTrack(
+            audio,
+            listOf("monview_stream")
+        )
 
-        candidateListener =
-            WebRtcSignaling.listenCandidates(code, true) {
-                addRemoteCandidate(it)
+        if (videoSender == null || audioSender == null) {
+            onStatus("GAGAL MENAMBAHKAN TRACK VIDEO/AUDIO")
+            return
+        }
+
+        onStatus("TRACK VIDEO DAN AUDIO SIAP")
+
+        createCandidateListener()
+
+        answerListener = WebRtcSignaling.listenAnswer(
+            code,
+            attemptId
+        ) { answer ->
+
+            if (stopped || answer == null || answerProcessing) return@listenAnswer
+
+            if (
+                connection.signalingState() !=
+                PeerConnection.SignalingState.HAVE_LOCAL_OFFER
+            ) {
+                return@listenAnswer
             }
 
-        answerListener =
-            WebRtcSignaling.listenAnswer(code) { answer ->
-                if (
-                    answer != null &&
-                    connection.signalingState() ==
-                    PeerConnection.SignalingState.HAVE_LOCAL_OFFER
-                ) {
-                    connection.setRemoteDescription(
-                        object : SimpleSdpObserver() {
-                            override fun onSetSuccess() {
-                                flushPendingCandidates()
-                                onStatus("ANSWER DITERIMA KAMERA")
-                            }
+            answerProcessing = true
+            onStatus("ANSWER DITERIMA — MEMPROSES SDP")
 
-                            override fun onSetFailure(error: String) {
-                                onStatus("ANSWER GAGAL: $error")
-                            }
-                        },
-                        answer
-                    )
-                }
-            }
+            connection.setRemoteDescription(
+                object : SimpleSdpObserver() {
+
+                    override fun onSetSuccess() {
+                        answerProcessing = false
+                        flushPendingCandidates()
+                        onStatus("ANSWER BERHASIL DIPROSES KAMERA")
+                    }
+
+                    override fun onSetFailure(error: String) {
+                        answerProcessing = false
+                        onStatus("ANSWER GAGAL DIPROSES: $error")
+                    }
+                },
+                answer
+            )
+        }
 
         connection.createOffer(
             object : SimpleSdpObserver() {
+
                 override fun onCreateSuccess(
                     description: SessionDescription
                 ) {
+                    if (stopped) return
+
+                    onStatus("OFFER BERHASIL DIBUAT")
+
                     connection.setLocalDescription(
                         object : SimpleSdpObserver() {
+
                             override fun onSetSuccess() {
+                                if (stopped) return
+
+                                onStatus("LOCAL OFFER SIAP")
+
                                 WebRtcSignaling.sendOffer(
                                     code,
+                                    attemptId,
                                     description
                                 ) { success, message ->
-                                    onStatus(
-                                        if (success) "OFFER TERKIRIM"
-                                        else "OFFER GAGAL: $message"
-                                    )
+
+                                    if (!stopped) {
+                                        onStatus(
+                                            if (success) {
+                                                "OFFER TERKIRIM"
+                                            } else {
+                                                "OFFER GAGAL: $message"
+                                            }
+                                        )
+                                    }
                                 }
                             }
 
                             override fun onSetFailure(error: String) {
-                                onStatus("LOCAL DESCRIPTION GAGAL: $error")
+                                onStatus("LOCAL OFFER GAGAL: $error")
                             }
                         },
                         description
@@ -249,10 +338,11 @@ class WebRtcSession(
     }
 
     fun startViewer() {
-        if (isCamera || peerConnection != null) return
+        if (isCamera || peerConnection != null || stopped) return
 
-        val connection =
-            WebRtcManager.createPeerConnection(observer)
+        onStatus("MENYIAPKAN PEER CONNECTION PEMANTAU")
+
+        val connection = WebRtcManager.createPeerConnection(observer)
 
         if (connection == null) {
             onStatus("GAGAL MEMBUAT PEER CONNECTION")
@@ -260,92 +350,129 @@ class WebRtcSession(
         }
 
         peerConnection = connection
+
         onStatus("MENUNGGU OFFER KAMERA")
 
-        candidateListener =
-            WebRtcSignaling.listenCandidates(code, false) {
-                addRemoteCandidate(it)
+        createCandidateListener()
+
+        offerListener = WebRtcSignaling.listenOffer(
+            code,
+            attemptId
+        ) { offer ->
+
+            if (
+                stopped ||
+                offer == null ||
+                offerProcessing ||
+                connection.signalingState() !=
+                PeerConnection.SignalingState.STABLE
+            ) {
+                return@listenOffer
             }
 
-        offerListener =
-            WebRtcSignaling.listenOffer(code) { offer ->
-                if (
-                    offer != null &&
-                    connection.signalingState() ==
-                    PeerConnection.SignalingState.STABLE
-                ) {
-                    onStatus("OFFER DITERIMA PEMANTAU")
+            offerProcessing = true
 
-                    connection.setRemoteDescription(
-                        object : SimpleSdpObserver() {
-                            override fun onSetSuccess() {
-                                flushPendingCandidates()
+            onStatus("OFFER DITERIMA — MEMPROSES SDP")
 
-                                connection.createAnswer(
-                                    object : SimpleSdpObserver() {
-                                        override fun onCreateSuccess(
-                                            answer: SessionDescription
-                                        ) {
-                                            connection.setLocalDescription(
-                                                object : SimpleSdpObserver() {
-                                                    override fun onSetSuccess() {
-                                                        WebRtcSignaling.sendAnswer(
-                                                            code,
-                                                            answer
-                                                        ) { success, message ->
-                                                            onStatus(
-                                                                if (success) "ANSWER TERKIRIM"
-                                                                else "ANSWER GAGAL: $message"
-                                                            )
-                                                        }
-                                                    }
+            connection.setRemoteDescription(
+                object : SimpleSdpObserver() {
 
-                                                    override fun onSetFailure(
-                                                        error: String
-                                                    ) {
+                    override fun onSetSuccess() {
+                        if (stopped) return
+
+                        flushPendingCandidates()
+
+                        onStatus("OFFER BERHASIL DIPROSES")
+
+                        connection.createAnswer(
+                            object : SimpleSdpObserver() {
+
+                                override fun onCreateSuccess(
+                                    answer: SessionDescription
+                                ) {
+                                    if (stopped) return
+
+                                    onStatus("ANSWER BERHASIL DIBUAT")
+
+                                    connection.setLocalDescription(
+                                        object : SimpleSdpObserver() {
+
+                                            override fun onSetSuccess() {
+                                                if (stopped) return
+
+                                                WebRtcSignaling.sendAnswer(
+                                                    code,
+                                                    attemptId,
+                                                    answer
+                                                ) { success, message ->
+
+                                                    if (!stopped) {
                                                         onStatus(
-                                                            "LOCAL ANSWER GAGAL: $error"
+                                                            if (success) {
+                                                                "ANSWER TERKIRIM"
+                                                            } else {
+                                                                "ANSWER GAGAL: $message"
+                                                            }
                                                         )
                                                     }
-                                                },
-                                                answer
-                                            )
-                                        }
+                                                }
+                                            }
 
-                                        override fun onCreateFailure(
-                                            error: String
-                                        ) {
-                                            onStatus(
-                                                "GAGAL MEMBUAT ANSWER: $error"
-                                            )
-                                        }
-                                    },
-                                    MediaConstraints()
-                                )
-                            }
+                                            override fun onSetFailure(
+                                                error: String
+                                            ) {
+                                                onStatus(
+                                                    "LOCAL ANSWER GAGAL: $error"
+                                                )
+                                            }
+                                        },
+                                        answer
+                                    )
+                                }
 
-                            override fun onSetFailure(error: String) {
-                                onStatus("OFFER GAGAL DITERIMA: $error")
-                            }
-                        },
-                        offer
-                    )
-                }
-            }
+                                override fun onCreateFailure(error: String) {
+                                    onStatus("GAGAL MEMBUAT ANSWER: $error")
+                                }
+                            },
+                            MediaConstraints()
+                        )
+                    }
+
+                    override fun onSetFailure(error: String) {
+                        offerProcessing = false
+                        onStatus("OFFER GAGAL DIPROSES: $error")
+                    }
+                },
+                offer
+            )
+        }
     }
 
     fun stop() {
+        if (stopped) return
+
+        stopped = true
+
         answerListener?.let {
-            WebRtcSignaling.removeAnswerListener(code, it)
+            WebRtcSignaling.removeAnswerListener(
+                code,
+                attemptId,
+                it
+            )
         }
 
         offerListener?.let {
-            WebRtcSignaling.removeOfferListener(code, it)
+            WebRtcSignaling.removeOfferListener(
+                code,
+                attemptId,
+                it
+            )
         }
 
         candidateListener?.let {
             WebRtcSignaling.removeCandidateListener(
                 code,
+                attemptId,
                 isCamera,
                 it
             )
@@ -357,19 +484,30 @@ class WebRtcSession(
 
         pendingCandidates.clear()
         deliveredTrackIds.clear()
+
         remoteDescriptionReady = false
+        offerProcessing = false
+        answerProcessing = false
 
         peerConnection?.close()
         peerConnection?.dispose()
         peerConnection = null
 
-        onStatus("KONEKSI DIHENTIKAN")
+        onStatus("WEBRTC SESSION DIHENTIKAN")
     }
 }
 
 open class SimpleSdpObserver : SdpObserver {
-    override fun onCreateSuccess(description: SessionDescription) {}
-    override fun onSetSuccess() {}
-    override fun onCreateFailure(error: String) {}
-    override fun onSetFailure(error: String) {}
+
+    override fun onCreateSuccess(description: SessionDescription) {
+    }
+
+    override fun onSetSuccess() {
+    }
+
+    override fun onCreateFailure(error: String) {
+    }
+
+    override fun onSetFailure(error: String) {
+    }
 }
