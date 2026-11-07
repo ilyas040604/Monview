@@ -1,4 +1,3 @@
-
 package com.monview
 
 import android.content.Context
@@ -8,42 +7,69 @@ import org.webrtc.PeerConnectionFactory
 object WebRtcManager {
 
     @Volatile
-    private var factory: PeerConnectionFactory? = null
+    private var peerConnectionFactory: PeerConnectionFactory? = null
 
-    @Synchronized
+    private val lock = Any()
+
     fun initialize(context: Context) {
-        if (factory != null) return
+        if (peerConnectionFactory != null) return
 
-        val appContext = context.applicationContext
+        synchronized(lock) {
+            if (peerConnectionFactory != null) return
 
-        PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions
-                .builder(appContext)
-                .createInitializationOptions()
-        )
+            val options =
+                PeerConnectionFactory.InitializationOptions
+                    .builder(context.applicationContext)
+                    .setEnableInternalTracer(false)
+                    .createInitializationOptions()
 
-        factory = PeerConnectionFactory.builder()
-            .createPeerConnectionFactory()
+            PeerConnectionFactory.initialize(options)
+
+            val encoderFactory =
+                org.webrtc.DefaultVideoEncoderFactory(
+                    null,
+                    true,
+                    true
+                )
+
+            val decoderFactory =
+                org.webrtc.DefaultVideoDecoderFactory(null)
+
+            peerConnectionFactory =
+                PeerConnectionFactory.builder()
+                    .setVideoEncoderFactory(encoderFactory)
+                    .setVideoDecoderFactory(decoderFactory)
+                    .createPeerConnectionFactory()
+        }
     }
 
-    fun getFactory(): PeerConnectionFactory {
-        return factory
-            ?: throw IllegalStateException(
-                "WebRTC belum diinisialisasi."
-            )
+    fun getFactory(): PeerConnectionFactory? {
+        return peerConnectionFactory
     }
 
     fun createPeerConnection(
         observer: PeerConnection.Observer
     ): PeerConnection? {
+
+        val factory = peerConnectionFactory ?: return null
+
         val iceServers = listOf(
-            PeerConnection.IceServer.builder(
-                "stun:stun.l.google.com:19302"
-            ).createIceServer()
+            PeerConnection.IceServer
+                .builder("stun:stun.l.google.com:19302")
+                .createIceServer(),
+
+            PeerConnection.IceServer
+                .builder("stun:stun1.l.google.com:19302")
+                .createIceServer(),
+
+            PeerConnection.IceServer
+                .builder("stun:stun.cloudflare.com:3478")
+                .createIceServer()
         )
 
         val configuration =
             PeerConnection.RTCConfiguration(iceServers).apply {
+
                 sdpSemantics =
                     PeerConnection.SdpSemantics.UNIFIED_PLAN
 
@@ -53,21 +79,25 @@ object WebRtcManager {
                 rtcpMuxPolicy =
                     PeerConnection.RtcpMuxPolicy.REQUIRE
 
+                iceTransportsType =
+                    PeerConnection.IceTransportsType.ALL
+
                 continualGatheringPolicy =
                     PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
 
                 iceCandidatePoolSize = 10
             }
 
-        return getFactory().createPeerConnection(
+        return factory.createPeerConnection(
             configuration,
             observer
         )
     }
 
-    @Synchronized
     fun shutdown() {
-        factory?.dispose()
-        factory = null
+        synchronized(lock) {
+            peerConnectionFactory?.dispose()
+            peerConnectionFactory = null
+        }
     }
 }
