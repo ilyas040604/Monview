@@ -29,7 +29,6 @@ import com.google.firebase.database.ValueEventListener
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.webrtc.AudioTrack
-import org.webrtc.EglBase
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 
@@ -56,7 +55,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var nightVisionButton: Button
     private lateinit var audioButton: Button
 
-    private var eglBase: EglBase? = null
     private var webRtcSession: WebRtcSession? = null
     private var viewerListener: ValueEventListener? = null
     private var cameraStatusListener: ValueEventListener? = null
@@ -115,7 +113,8 @@ class MainActivity : ComponentActivity() {
 
         window.statusBarColor = backgroundColor
         window.navigationBarColor = backgroundColor
-        eglBase = EglBase.create()
+
+        WebRtcManager.initialize(applicationContext)
 
         buildHomeScreen()
         buildCameraScreen()
@@ -303,7 +302,11 @@ class MainActivity : ComponentActivity() {
         }
 
         remoteRenderer = SurfaceViewRenderer(this).apply {
-            init(eglBase!!.eglBaseContext, null)
+            init(
+                WebRtcManager.getEglBaseContext()
+                    ?: throw IllegalStateException("EGL WebRTC belum siap"),
+                null
+            )
             setEnableHardwareScaler(true)
             setMirror(false)
             setBackgroundColor(Color.BLACK)
@@ -836,8 +839,6 @@ class MainActivity : ComponentActivity() {
                                 track.addSink(it)
                             }
 
-                            // Timer tidak dihentikan hanya karena track diterima.
-                            // Koneksi harus benar-benar mencapai WEBRTC CONNECTED.
                             viewerStatus.text =
                                 "TRACK VIDEO DITERIMA — MENUNGGU KONEKSI MEDIA"
                         }
@@ -904,8 +905,6 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 remoteAudioTrack = track
                                 track.setEnabled(audioEnabled)
-
-                                // Timer tetap berjalan sampai WebRTC CONNECTED.
                             }
                         }
                     }
@@ -1322,8 +1321,6 @@ class MainActivity : ComponentActivity() {
         restoreAudioOutput()
 
         remoteRenderer.release()
-        eglBase?.release()
-        eglBase = null
 
         // Pairing lokal dan layanan kamera sengaja dipertahankan
         // agar bisa dipulihkan.
