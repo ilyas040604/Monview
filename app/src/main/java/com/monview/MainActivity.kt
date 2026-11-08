@@ -55,6 +55,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var switchCameraButton: Button
     private lateinit var nightVisionButton: Button
     private lateinit var audioButton: Button
+    private lateinit var touchLockOverlay: TextView
+    private lateinit var lockButton: Button
+
+    private var touchLocked = false
 
     private var webRtcSession: WebRtcSession? = null
     private var viewerListener: ValueEventListener? = null
@@ -335,11 +339,8 @@ class MainActivity : ComponentActivity() {
                 }
             )
 
-            // Fixed-size SurfaceView dapat bermasalah
-            // pada perangkat Android tertentu.
             setEnableHardwareScaler(false)
 
-            // Menampilkan seluruh gambar tanpa memotong sisi video.
             setScalingType(
                 RendererCommon.ScalingType.SCALE_ASPECT_FIT
             )
@@ -365,6 +366,32 @@ class MainActivity : ComponentActivity() {
 
         viewerScreen.addView(
             remoteRenderer,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        // Overlay hanya mengunci area video.
+        // Panel status dan tombol kontrol tetap berada di atas overlay.
+        touchLockOverlay = TextView(this).apply {
+            text = "LAYAR TERKUNCI\nKETUK DI SINI UNTUK MEMBUKA"
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            setTypeface(typeface, Typeface.BOLD)
+            setBackgroundColor(Color.argb(210, 0, 0, 0))
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+
+            setOnClickListener {
+                setTouchLocked(false)
+            }
+        }
+
+        viewerScreen.addView(
+            touchLockOverlay,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -544,11 +571,8 @@ class MainActivity : ComponentActivity() {
             toggleFullscreen()
         }
 
-        val lockButton = makeControlButton("KUNCI LAYAR") {
-            viewerStatus.text = "KUNCI SENTUH BELUM TERSEDIA"
-        }.apply {
-            isEnabled = false
-            alpha = 0.45f
+        lockButton = makeControlButton("KUNCI SENTUH") {
+            setTouchLocked(!touchLocked)
         }
 
         thirdRow.addView(
@@ -622,6 +646,30 @@ class MainActivity : ComponentActivity() {
                     View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             }
+    }
+
+    private fun setTouchLocked(locked: Boolean) {
+        if (
+            !::touchLockOverlay.isInitialized ||
+            !::lockButton.isInitialized
+        ) return
+
+        touchLocked = locked
+
+        touchLockOverlay.visibility =
+            if (locked) View.VISIBLE else View.GONE
+
+        lockButton.text =
+            if (locked) "BUKA KUNCI" else "KUNCI SENTUH"
+
+        if (::viewerStatus.isInitialized) {
+            viewerStatus.text =
+                if (locked) {
+                    "LAYAR VIDEO DIKUNCI — TOMBOL KONTROL TETAP AKTIF"
+                } else {
+                    "KUNCI SENTUH DINONAKTIFKAN"
+                }
+        }
     }
 
     private fun requestCameraPermissions() {
@@ -1245,6 +1293,14 @@ class MainActivity : ComponentActivity() {
         nightVisionEnabled = false
 
         nightVisionSink?.setNightVisionEnabled(false)
+
+        touchLocked = false
+        if (::touchLockOverlay.isInitialized) {
+            touchLockOverlay.visibility = View.GONE
+        }
+        if (::lockButton.isInitialized) {
+            lockButton.text = "KUNCI SENTUH"
+        }
 
         cameraStatusListener?.let { listener ->
             code?.let {
