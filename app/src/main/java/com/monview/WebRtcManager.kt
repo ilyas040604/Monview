@@ -1,15 +1,27 @@
+
 package com.monview
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import org.json.JSONObject
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.Executors
 
 object WebRtcManager {
+
+    private const val TURN_WORKER_URL =
+        "https://monview-turn.ilyasss1815.workers.dev/"
 
     @Volatile
     private var peerConnectionFactory: PeerConnectionFactory? = null
 
     private val lock = Any()
+    private val executor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     fun initialize(context: Context) {
         if (peerConnectionFactory != null) return
@@ -48,50 +60,134 @@ object WebRtcManager {
     }
 
     fun createPeerConnection(
-        observer: PeerConnection.Observer
-    ): PeerConnection? {
+        observer: PeerConnection.Observer,
+        callback: (PeerConnection?, String?) -> Unit
+    ) {
+        executor.execute {
+            try {
+                val connection = URL(TURN_WORKER_URL)
+                    .openConnection() as HttpURLConnection
 
-        val factory = peerConnectionFactory ?: return null
+                connection.requestMethod = "POST"
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
+                connection.doOutput = true
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/json"
+                )
 
-        val iceServers = listOf(
-            PeerConnection.IceServer
-                .builder("stun:stun.l.google.com:19302")
-                .createIceServer(),
+                connection.outputStream.use {
+                    it.write("{}".toByteArray(Charsets.UTF_8))
+                }
 
-            PeerConnection.IceServer
-                .builder("stun:stun1.l.google.com:19302")
-                .createIceServer(),
+                val status = connection.responseCode
 
-            PeerConnection.IceServer
-                .builder("stun:stun.cloudflare.com:3478")
-                .createIceServer()
-        )
+                val response = (
+                    if (status in 200..299) {
+                        connection.inputStream
+                    } else {
+                        connection.errorStream
+                    }
+                )?.bufferedReader()?.use {
+                    it.readText()
+                } ?: ""
 
-        val configuration =
-            PeerConnection.RTCConfiguration(iceServers).apply {
+                connection.disconnect()
 
-                sdpSemantics =
-                    PeerConnection.SdpSemantics.UNIFIED_PLAN
+                if (status !in 200..299) {
+                    throw Exception(
+                        "TURN Worker HTTP $status: $response"
+                    )
+                }
 
-                bundlePolicy =
-                    PeerConnection.BundlePolicy.MAXBUNDLE
+                val json = JSONObject(response)
+                val servers = json.getJSONArray("iceServers")
 
-                rtcpMuxPolicy =
-                    PeerConnection.RtcpMuxPolicy.REQUIRE
+                val iceServers =
+                    mutableListOf<PeerConnection.IceServer>()
 
-                iceTransportsType =
-                    PeerConnection.IceTransportsType.ALL
+                for (i in 0 until servers.length()) {
+                    val server = servers.getJSONObject(i)
+                    val urlsValue = server.get("urls")
 
-                continualGatheringPolicy =
-                    PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+                    val urls = when (urlsValue) {
+                        is String -> listOf(urlsValue)
+                        is org.json.JSONArray -> {
+                            (0 until urlsValue.length()).map {
+                                urlsValue.getString(it)
+                            }
+                        }
+                        else -> emptyList()
+                    }
 
-                iceCandidatePoolSize = 10
+                    if (urls.isEmpty()) continue
+
+                    val username = server.optString("username", "")
+                    val credential = server.optString("credential", "")
+
+                    val builder =
+                        PeerConnection.IceServer.builder(urls)
+
+                    if (username.isNotEmpty()) {
+                        builder.setUsername(username)
+                    }
+
+                    if (credential.isNotEmpty()) {
+                        builder.setPassword(credential)
+                    }
+
+                    iceServers.add(builder.createIceServer())
+                }
+
+                if (iceServers.isEmpty()) {
+                    throw Exception("TURN Worker tidak mengirim ICE server")
+                }
+
+                val factory =
+                    peerConnectionFactory
+                        ?: throw Exception("WebRTC belum diinisialisasi")
+
+                val configuration =
+                    PeerConnection.RTCConfiguration(iceServers).apply {
+                        sdpSemantics =
+                            PeerConnection.SdpSemantics.UNIFIED_PLAN
+
+                        bundlePolicy =
+                            PeerConnection.BundlePolicy.MAXBUNDLE
+
+                        rtcpMuxPolicy =
+                            PeerConnection.RtcpMuxPolicy.REQUIRE
+
+                        iceTransportsType =
+                            PeerConnection.IceTransportsType.ALL
+
+                        continualGatheringPolicy =
+                            PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+
+                        iceCandidatePoolSize = 10
+                    }
+
+                val peerConnection =
+                    factory.createPeerConnection(configuration, observer)
+
+                if (peerConnection == null) {
+                    throw Exception("Gagal membuat PeerConnection")
+                }
+
+                mainHandler.post {
+                    callback(peerConnection, null)
+                }
+
+            } catch (e: Exception) {
+                mainHandler.post {
+                    callback(
+                        null,
+                        e.message ?: "Gagal mengambil konfigurasi TURN"
+                    )
+                }
             }
-
-        return factory.createPeerConnection(
-            configuration,
-            observer
-        )
+        }
     }
 
     fun shutdown() {
