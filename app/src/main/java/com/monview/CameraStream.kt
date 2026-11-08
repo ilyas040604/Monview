@@ -1,3 +1,4 @@
+
 package com.monview
 
 import android.Manifest
@@ -8,7 +9,6 @@ import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.Camera2Enumerator
 import org.webrtc.CameraVideoCapturer
-import org.webrtc.EglBase
 import org.webrtc.MediaConstraints
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
@@ -20,7 +20,6 @@ class CameraStream(private val context: Context) {
     private var videoSource: VideoSource? = null
     private var audioSource: AudioSource? = null
     private var textureHelper: SurfaceTextureHelper? = null
-    private var eglBase: EglBase? = null
 
     var videoTrack: VideoTrack? = null
         private set
@@ -49,6 +48,9 @@ class CameraStream(private val context: Context) {
             val factory = WebRtcManager.getFactory()
                 ?: return false
 
+            val eglContext = WebRtcManager.getEglBaseContext()
+                ?: return false
+
             val enumerator = Camera2Enumerator(context)
 
             val cameraName = enumerator.deviceNames.firstOrNull {
@@ -59,11 +61,9 @@ class CameraStream(private val context: Context) {
             val camera = enumerator.createCapturer(cameraName, null)
                 ?: return false
 
-            val egl = EglBase.create()
-
             val helper = SurfaceTextureHelper.create(
                 "MonViewCameraThread",
-                egl.eglBaseContext
+                eglContext
             ) ?: throw IllegalStateException(
                 "Gagal menyiapkan kamera"
             )
@@ -93,7 +93,6 @@ class CameraStream(private val context: Context) {
             )
 
             capturer = camera
-            eglBase = egl
             textureHelper = helper
             videoSource = video
             audioSource = audio
@@ -162,8 +161,5 @@ class CameraStream(private val context: Context) {
 
         textureHelper?.dispose()
         textureHelper = null
-
-        eglBase?.release()
-        eglBase = null
     }
 }
