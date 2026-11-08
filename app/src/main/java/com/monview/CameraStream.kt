@@ -1,4 +1,3 @@
-
 package com.monview
 
 import android.Manifest
@@ -45,6 +44,7 @@ class CameraStream(
         }
 
         override fun onCameraFreezed(errorDescription: String) {
+            lastError = errorDescription
             onStatus("KAMERA MACET: $errorDescription")
         }
 
@@ -90,23 +90,34 @@ class CameraStream(
                 ?: return fail("EGL CONTEXT TIDAK TERSEDIA")
 
             val enumerator = Camera2Enumerator(context)
+            val cameraNames = enumerator.deviceNames
 
-            val cameraName = enumerator.deviceNames.firstOrNull {
+            if (cameraNames.isEmpty()) {
+                return fail("HP TIDAK MENEMUKAN KAMERA")
+            }
+
+            val cameraName = cameraNames.firstOrNull {
                 enumerator.isFrontFacing(it)
-            } ?: enumerator.deviceNames.firstOrNull()
-                ?: return fail("HP TIDAK MENEMUKAN KAMERA")
+            } ?: cameraNames.first()
+
+            onStatus("KAMERA DIPILIH: $cameraName")
 
             val camera = enumerator.createCapturer(
                 cameraName,
                 cameraEvents
             ) ?: return fail("GAGAL MEMBUAT CAMERA CAPTURER")
 
+            capturer = camera
+
             val helper = SurfaceTextureHelper.create(
                 "MonViewCameraThread",
                 eglContext
             ) ?: return fail("GAGAL MEMBUAT SURFACE TEXTURE HELPER")
 
+            textureHelper = helper
+
             val video = factory.createVideoSource(false)
+            videoSource = video
 
             camera.initialize(
                 helper,
@@ -114,34 +125,35 @@ class CameraStream(
                 video.capturerObserver
             )
 
-            camera.startCapture(1280, 720, 24)
-
+            // Track dibuat dan diaktifkan sebelum capture dimulai.
             val videoMediaTrack = factory.createVideoTrack(
                 "monview_video",
                 video
             )
+            videoMediaTrack.setEnabled(true)
+            videoTrack = videoMediaTrack
 
             val audio = factory.createAudioSource(
                 MediaConstraints()
             )
+            audioSource = audio
 
             val audioMediaTrack = factory.createAudioTrack(
                 "monview_audio",
                 audio
             )
-
-            capturer = camera
-            textureHelper = helper
-            videoSource = video
-            audioSource = audio
-            videoTrack = videoMediaTrack
+            audioMediaTrack.setEnabled(true)
             audioTrack = audioMediaTrack
 
-            onStatus("CAPTURE KAMERA DIMULAI")
+            onStatus("TRACK VIDEO DAN AUDIO SIAP — MEMULAI CAPTURE")
+
+            camera.startCapture(1280, 720, 24)
+
+            onStatus("CAPTURE KAMERA DIMULAI — MENUNGGU FRAME PERTAMA")
             true
 
         } catch (e: Exception) {
-            fail("GAGAL MEMULAI KAMERA: ${e.message}")
+            fail("GAGAL MEMULAI KAMERA: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 
@@ -175,6 +187,7 @@ class CameraStream(
                 }
 
                 override fun onCameraSwitchError(error: String) {
+                    lastError = error
                     onResult(false, error)
                 }
             }
@@ -187,22 +200,40 @@ class CameraStream(
         } catch (_: Exception) {
         }
 
-        capturer?.dispose()
+        try {
+            capturer?.dispose()
+        } catch (_: Exception) {
+        }
         capturer = null
 
-        videoTrack?.dispose()
+        try {
+            videoTrack?.dispose()
+        } catch (_: Exception) {
+        }
         videoTrack = null
 
-        audioTrack?.dispose()
+        try {
+            audioTrack?.dispose()
+        } catch (_: Exception) {
+        }
         audioTrack = null
 
-        videoSource?.dispose()
+        try {
+            videoSource?.dispose()
+        } catch (_: Exception) {
+        }
         videoSource = null
 
-        audioSource?.dispose()
+        try {
+            audioSource?.dispose()
+        } catch (_: Exception) {
+        }
         audioSource = null
 
-        textureHelper?.dispose()
+        try {
+            textureHelper?.dispose()
+        } catch (_: Exception) {
+        }
         textureHelper = null
     }
 }
