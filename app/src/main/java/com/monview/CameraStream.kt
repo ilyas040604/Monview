@@ -1,4 +1,3 @@
-
 package com.monview
 
 import android.Manifest
@@ -7,7 +6,9 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
+import org.webrtc.Camera1Enumerator
 import org.webrtc.Camera2Enumerator
+import org.webrtc.CameraEnumerator
 import org.webrtc.CameraVideoCapturer
 import org.webrtc.MediaConstraints
 import org.webrtc.SurfaceTextureHelper
@@ -100,23 +101,72 @@ class CameraStream(
             val eglContext = WebRtcManager.getEglBaseContext()
                 ?: return fail("EGL CONTEXT TIDAK TERSEDIA")
 
-            val enumerator = Camera2Enumerator(context)
-            val cameraNames = enumerator.deviceNames
+            // Pilih Camera2 jika didukung perangkat.
+            // Jika tidak, gunakan Camera1.
+            var enumerator: CameraEnumerator =
+                if (Camera2Enumerator.isSupported(context)) {
+                    onStatus("MODE KAMERA: CAMERA2")
+                    Camera2Enumerator(context)
+                } else {
+                    onStatus("MODE KAMERA: CAMERA1")
+                    Camera1Enumerator(true)
+                }
+
+            var cameraNames = enumerator.deviceNames
+
+            // Jika Camera2 tidak menemukan perangkat kamera,
+            // coba enumerator Camera1 sebagai cadangan.
+            if (
+                cameraNames.isEmpty() &&
+                enumerator !is Camera1Enumerator
+            ) {
+                onStatus("CAMERA2 TIDAK MENEMUKAN KAMERA — COBA CAMERA1")
+                enumerator = Camera1Enumerator(true)
+                cameraNames = enumerator.deviceNames
+            }
 
             if (cameraNames.isEmpty()) {
                 return fail("HP TIDAK MENEMUKAN KAMERA")
             }
 
-            val cameraName = cameraNames.firstOrNull {
+            // Pertahankan pilihan kamera depan seperti versi sebelumnya.
+            var cameraName = cameraNames.firstOrNull {
                 enumerator.isFrontFacing(it)
             } ?: cameraNames.first()
 
             onStatus("KAMERA DIPILIH: $cameraName")
 
-            val camera = enumerator.createCapturer(
+            var camera = enumerator.createCapturer(
                 cameraName,
                 cameraEvents
-            ) ?: return fail("GAGAL MEMBUAT CAMERA CAPTURER")
+            )
+
+            // Jika Camera2 gagal membuat capturer,
+            // coba Camera1 sebelum proses kamera dihentikan.
+            if (
+                camera == null &&
+                enumerator !is Camera1Enumerator
+            ) {
+                onStatus("CAPTURER CAMERA2 GAGAL — MENCOBA CAMERA1")
+
+                val backupEnumerator = Camera1Enumerator(true)
+                val backupNames = backupEnumerator.deviceNames
+
+                if (backupNames.isNotEmpty()) {
+                    cameraName = backupNames.firstOrNull {
+                        backupEnumerator.isFrontFacing(it)
+                    } ?: backupNames.first()
+
+                    camera = backupEnumerator.createCapturer(
+                        cameraName,
+                        cameraEvents
+                    )
+                }
+            }
+
+            if (camera == null) {
+                return fail("GAGAL MEMBUAT CAMERA CAPTURER")
+            }
 
             capturer = camera
 
