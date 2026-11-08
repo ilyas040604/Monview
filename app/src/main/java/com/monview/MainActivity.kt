@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var cameraStatus: TextView
     private lateinit var viewerStatus: TextView
+    private lateinit var viewerVideoStatus: TextView
     private lateinit var viewerConnectionLabel: TextView
     private lateinit var qrImage: ImageView
     private lateinit var remoteRenderer: SurfaceViewRenderer
@@ -312,7 +313,20 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(Color.BLACK)
         }
 
-        nightVisionSink = NightVisionVideoSink(remoteRenderer)
+        viewerVideoStatus = makeText(
+            "VIDEO: MENUNGGU TRACK",
+            12f,
+            Color.YELLOW,
+            true
+        )
+
+        nightVisionSink = NightVisionVideoSink(remoteRenderer) {
+            runOnUiThread {
+                viewerVideoStatus.text =
+                    "VIDEO: FRAME BERHASIL DITERIMA"
+                viewerVideoStatus.setTextColor(accentColor)
+            }
+        }
 
         viewerScreen.addView(
             remoteRenderer,
@@ -367,6 +381,7 @@ class MainActivity : ComponentActivity() {
 
         topPanel.addView(header, fullWidth())
         topPanel.addView(viewerStatus, fullWidth())
+        topPanel.addView(viewerVideoStatus, fullWidth())
 
         viewerScreen.addView(
             topPanel,
@@ -712,6 +727,9 @@ class MainActivity : ComponentActivity() {
                 "MEMERIKSA QR..."
             }
 
+        viewerVideoStatus.text = "VIDEO: MENUNGGU TRACK"
+        viewerVideoStatus.setTextColor(Color.YELLOW)
+
         SessionManager.joinSession(code, this) { success, message ->
 
             runOnUiThread {
@@ -789,6 +807,8 @@ class MainActivity : ComponentActivity() {
         viewerConnectionLabel.text = "● MENYAMBUNG"
         viewerConnectionLabel.setTextColor(mutedColor)
         viewerStatus.text = "MEMINTA KONEKSI KAMERA..."
+        viewerVideoStatus.text = "VIDEO: MENUNGGU TRACK"
+        viewerVideoStatus.setTextColor(Color.YELLOW)
 
         WebRtcSignaling.requestConnection(code) {
                 success,
@@ -841,6 +861,10 @@ class MainActivity : ComponentActivity() {
 
                             viewerStatus.text =
                                 "TRACK VIDEO DITERIMA — MENUNGGU KONEKSI MEDIA"
+
+                            viewerVideoStatus.text =
+                                "VIDEO: TRACK DITERIMA, MENUNGGU FRAME"
+                            viewerVideoStatus.setTextColor(Color.YELLOW)
                         }
                     },
 
@@ -1154,7 +1178,6 @@ class MainActivity : ComponentActivity() {
         }
 
         cameraServiceStarted = false
-
         activeAttemptId = null
 
         remoteVideoTrack?.let { track ->
@@ -1195,6 +1218,11 @@ class MainActivity : ComponentActivity() {
         qrImage.visibility = View.GONE
         nightVisionButton.text = "NIGHT VISION MATI"
         audioButton.text = "SUARA AKTIF"
+
+        if (::viewerVideoStatus.isInitialized) {
+            viewerVideoStatus.text = "VIDEO: MENUNGGU TRACK"
+            viewerVideoStatus.setTextColor(Color.YELLOW)
+        }
 
         if (clearPairing) {
             PairingStore.clear(this)
@@ -1321,9 +1349,6 @@ class MainActivity : ComponentActivity() {
         restoreAudioOutput()
 
         remoteRenderer.release()
-
-        // Pairing lokal dan layanan kamera sengaja dipertahankan
-        // agar bisa dipulihkan.
 
         super.onDestroy()
     }
