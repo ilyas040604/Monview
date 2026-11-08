@@ -28,6 +28,7 @@ import com.google.firebase.database.ValueEventListener
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.webrtc.AudioTrack
+import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 
@@ -305,9 +306,44 @@ class MainActivity : ComponentActivity() {
             init(
                 WebRtcManager.getEglBaseContext()
                     ?: throw IllegalStateException("EGL WebRTC belum siap"),
-                null
+
+                object : RendererCommon.RendererEvents {
+
+                    override fun onFirstFrameRendered() {
+                        runOnUiThread {
+                            if (::viewerVideoStatus.isInitialized) {
+                                viewerVideoStatus.text =
+                                    "VIDEO: FRAME TAMPIL DI LAYAR"
+                                viewerVideoStatus.setTextColor(accentColor)
+                            }
+                        }
+                    }
+
+                    override fun onFrameResolutionChanged(
+                        videoWidth: Int,
+                        videoHeight: Int,
+                        rotation: Int
+                    ) {
+                        runOnUiThread {
+                            if (::viewerVideoStatus.isInitialized) {
+                                viewerVideoStatus.text =
+                                    "VIDEO: ${videoWidth}x${videoHeight} — ROTASI ${rotation}°"
+                                viewerVideoStatus.setTextColor(accentColor)
+                            }
+                        }
+                    }
+                }
             )
-            setEnableHardwareScaler(true)
+
+            // Fixed-size SurfaceView dapat bermasalah
+            // pada perangkat Android tertentu.
+            setEnableHardwareScaler(false)
+
+            // Menampilkan seluruh gambar tanpa memotong sisi video.
+            setScalingType(
+                RendererCommon.ScalingType.SCALE_ASPECT_FIT
+            )
+
             setMirror(false)
             setBackgroundColor(Color.BLACK)
         }
@@ -964,6 +1000,12 @@ class MainActivity : ComponentActivity() {
         remoteAudioTrack = null
 
         oldSession?.stop()
+
+        // Bersihkan gambar lama sebelum koneksi baru dimulai.
+        try {
+            remoteRenderer.clearImage()
+        } catch (_: Exception) {
+        }
     }
 
     private fun scheduleConnectionTimeout(
