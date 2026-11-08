@@ -1,3 +1,4 @@
+
 package com.monview
 
 import android.app.Notification
@@ -49,9 +50,7 @@ class MonitorService : Service() {
         createNotificationChannel()
     }
 
-    override fun onBind(intent: Intent?): IBinder {
-        return binder
-    }
+    override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(
         intent: Intent?,
@@ -61,7 +60,6 @@ class MonitorService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val code = intent.getStringExtra("session_code")
-
                 if (code.isNullOrBlank()) {
                     stopSelf()
                 } else {
@@ -75,9 +73,7 @@ class MonitorService : Service() {
                 stopSelf()
             }
 
-            ACTION_SWITCH -> {
-                switchCamera()
-            }
+            ACTION_SWITCH -> switchCamera()
         }
 
         return START_NOT_STICKY
@@ -160,13 +156,18 @@ class MonitorService : Service() {
             }
 
             activeCode = code
-
             updateStatus("MENYIAPKAN KAMERA DAN MIKROFON...")
 
-            val stream = CameraStream(applicationContext)
+            // Laporkan setiap status langsung dari CameraStream.
+            val stream = CameraStream(applicationContext) { message ->
+                updateStatus(message)
+            }
 
             if (!stream.start()) {
-                updateStatus("GAGAL MENYALAKAN KAMERA ATAU MIKROFON")
+                updateStatus(
+                    stream.lastError ?: "GAGAL MENYALAKAN KAMERA"
+                )
+                stream.stop()
                 stopCameraService()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -177,7 +178,8 @@ class MonitorService : Service() {
 
             val pairing = PairingStore.get(this)
 
-            if (pairing == null ||
+            if (
+                pairing == null ||
                 pairing.role != "camera" ||
                 pairing.pairId != code ||
                 pairing.peerUid.isBlank()
@@ -219,7 +221,9 @@ class MonitorService : Service() {
                 viewerUid
             ) { attemptId ->
 
-                if (activeCode != code || !running) return@listenActiveConnection
+                if (activeCode != code || !running) {
+                    return@listenActiveConnection
+                }
 
                 if (attemptId.isNullOrBlank()) {
                     stopPeerConnection()
@@ -227,9 +231,7 @@ class MonitorService : Service() {
                     return@listenActiveConnection
                 }
 
-                if (attemptId == activeAttemptId) {
-                    return@listenActiveConnection
-                }
+                if (attemptId == activeAttemptId) return@listenActiveConnection
 
                 startPeerConnection(code, attemptId)
             }
@@ -242,14 +244,14 @@ class MonitorService : Service() {
         if (activeCode != code || !running) return
 
         stopPeerConnection()
-
         activeAttemptId = attemptId
         updateStatus("MEMBUAT KONEKSI WEBRTC...")
 
         try {
             val stream = cameraStream
 
-            if (stream == null ||
+            if (
+                stream == null ||
                 stream.videoTrack == null ||
                 stream.audioTrack == null
             ) {
@@ -263,7 +265,8 @@ class MonitorService : Service() {
                 isCamera = true,
                 onRemoteTrack = {},
                 onStatus = { message ->
-                    if (activeCode == code &&
+                    if (
+                        activeCode == code &&
                         activeAttemptId == attemptId
                     ) {
                         updateStatus(message)
@@ -324,13 +327,13 @@ class MonitorService : Service() {
         }
 
         stream.switchCamera { success, message ->
-            val result = if (success) {
-                "KAMERA BERHASIL DIGANTI: $message"
-            } else {
-                "GAGAL MENGGANTI KAMERA: $message"
-            }
-
-            updateStatus(result)
+            updateStatus(
+                if (success) {
+                    "KAMERA BERHASIL DIGANTI: $message"
+                } else {
+                    "GAGAL MENGGANTI KAMERA: $message"
+                }
+            )
         }
     }
 
