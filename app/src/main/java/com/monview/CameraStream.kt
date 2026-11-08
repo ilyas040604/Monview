@@ -1,3 +1,4 @@
+
 package com.monview
 
 import android.Manifest
@@ -10,8 +11,11 @@ import org.webrtc.Camera2Enumerator
 import org.webrtc.CameraVideoCapturer
 import org.webrtc.MediaConstraints
 import org.webrtc.SurfaceTextureHelper
+import org.webrtc.VideoFrame
+import org.webrtc.VideoSink
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
+import java.util.concurrent.atomic.AtomicBoolean
 
 class CameraStream(
     private val context: Context,
@@ -22,6 +26,9 @@ class CameraStream(
     private var videoSource: VideoSource? = null
     private var audioSource: AudioSource? = null
     private var textureHelper: SurfaceTextureHelper? = null
+    private var diagnosticSink: VideoSink? = null
+
+    private val firstTrackFrameReported = AtomicBoolean(false)
 
     var videoTrack: VideoTrack? = null
         private set
@@ -32,49 +39,53 @@ class CameraStream(
     var lastError: String? = null
         private set
 
-    private val cameraEvents = object : CameraVideoCapturer.CameraEventsHandler {
+    private val cameraEvents =
+        object : CameraVideoCapturer.CameraEventsHandler {
 
-        override fun onCameraError(errorDescription: String) {
-            lastError = errorDescription
-            onStatus("ERROR KAMERA: $errorDescription")
-        }
+            override fun onCameraError(errorDescription: String) {
+                lastError = errorDescription
+                onStatus("ERROR KAMERA: $errorDescription")
+            }
 
-        override fun onCameraDisconnected() {
-            onStatus("KAMERA TERPUTUS")
-        }
+            override fun onCameraDisconnected() {
+                onStatus("KAMERA TERPUTUS")
+            }
 
-        override fun onCameraFreezed(errorDescription: String) {
-            lastError = errorDescription
-            onStatus("KAMERA MACET: $errorDescription")
-        }
+            override fun onCameraFreezed(errorDescription: String) {
+                lastError = errorDescription
+                onStatus("KAMERA MACET: $errorDescription")
+            }
 
-        override fun onCameraOpening(cameraName: String) {
-            onStatus("MEMBUKA KAMERA: $cameraName")
-        }
+            override fun onCameraOpening(cameraName: String) {
+                onStatus("MEMBUKA KAMERA: $cameraName")
+            }
 
-        override fun onFirstFrameAvailable() {
-            onStatus("FRAME VIDEO PERTAMA BERHASIL DITERIMA")
-        }
+            override fun onFirstFrameAvailable() {
+                onStatus("CAPTURE KAMERA: FRAME PERTAMA DITERIMA")
+            }
 
-        override fun onCameraClosed() {
-            onStatus("KAMERA DITUTUP")
+            override fun onCameraClosed() {
+                onStatus("KAMERA DITUTUP")
+            }
         }
-    }
 
     fun start(): Boolean {
         if (videoTrack != null && audioTrack != null) return true
 
         lastError = null
+        firstTrackFrameReported.set(false)
 
-        val cameraPermission = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.CAMERA
-        ) == PackageManager.PERMISSION_GRANTED
+        val cameraPermission =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
 
-        val audioPermission = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
+        val audioPermission =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
 
         if (!cameraPermission || !audioPermission) {
             return fail("IZIN KAMERA ATAU MIKROFON BELUM DIBERIKAN")
@@ -125,13 +136,26 @@ class CameraStream(
                 video.capturerObserver
             )
 
-            // Track dibuat dan diaktifkan sebelum capture dimulai.
             val videoMediaTrack = factory.createVideoTrack(
                 "monview_video",
                 video
             )
+
             videoMediaTrack.setEnabled(true)
             videoTrack = videoMediaTrack
+
+            // Memastikan frame benar-benar masuk ke VideoTrack.
+            val sink = VideoSink { frame: VideoFrame ->
+                if (firstTrackFrameReported.compareAndSet(false, true)) {
+                    onStatus(
+                        "VIDEO TRACK MENERIMA FRAME: " +
+                            "${frame.buffer.width}x${frame.buffer.height}"
+                    )
+                }
+            }
+
+            diagnosticSink = sink
+            videoMediaTrack.addSink(sink)
 
             val audio = factory.createAudioSource(
                 MediaConstraints()
@@ -142,6 +166,7 @@ class CameraStream(
                 "monview_audio",
                 audio
             )
+
             audioMediaTrack.setEnabled(true)
             audioTrack = audioMediaTrack
 
@@ -149,11 +174,14 @@ class CameraStream(
 
             camera.startCapture(1280, 720, 24)
 
-            onStatus("CAPTURE KAMERA DIMULAI — MENUNGGU FRAME PERTAMA")
+            onStatus("CAPTURE DIMULAI — MENUNGGU FRAME VIDEO TRACK")
             true
 
         } catch (e: Exception) {
-            fail("GAGAL MEMULAI KAMERA: ${e.message ?: e.javaClass.simpleName}")
+            fail(
+                "GAGAL MEMULAI KAMERA: " +
+                    (e.message ?: e.javaClass.simpleName)
+            )
         }
     }
 
@@ -196,6 +224,14 @@ class CameraStream(
 
     fun stop() {
         try {
+            diagnosticSink?.let { sink ->
+                videoTrack?.removeSink(sink)
+            }
+        } catch (_: Exception) {
+        }
+        diagnosticSink = null
+
+        try {
             capturer?.stopCapture()
         } catch (_: Exception) {
         }
@@ -235,5 +271,7 @@ class CameraStream(
         } catch (_: Exception) {
         }
         textureHelper = null
+
+        firstTrackFrameReported.set(false)
     }
 }
