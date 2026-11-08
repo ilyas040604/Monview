@@ -5,8 +5,11 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
+import org.webrtc.EglBase
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.DefaultVideoEncoderFactory
+import org.webrtc.DefaultVideoDecoderFactory
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
@@ -18,6 +21,9 @@ object WebRtcManager {
 
     @Volatile
     private var peerConnectionFactory: PeerConnectionFactory? = null
+
+    @Volatile
+    private var rootEglBase: EglBase? = null
 
     private val lock = Any()
     private val executor = Executors.newSingleThreadExecutor()
@@ -37,26 +43,43 @@ object WebRtcManager {
 
             PeerConnectionFactory.initialize(options)
 
-            val encoderFactory =
-                org.webrtc.DefaultVideoEncoderFactory(
-                    null,
-                    true,
-                    true
-                )
+            val sharedEgl = EglBase.create()
 
-            val decoderFactory =
-                org.webrtc.DefaultVideoDecoderFactory(null)
+            try {
+                val encoderFactory =
+                    DefaultVideoEncoderFactory(
+                        sharedEgl.eglBaseContext,
+                        true,
+                        true
+                    )
 
-            peerConnectionFactory =
-                PeerConnectionFactory.builder()
-                    .setVideoEncoderFactory(encoderFactory)
-                    .setVideoDecoderFactory(decoderFactory)
-                    .createPeerConnectionFactory()
+                val decoderFactory =
+                    DefaultVideoDecoderFactory(
+                        sharedEgl.eglBaseContext
+                    )
+
+                val factory =
+                    PeerConnectionFactory.builder()
+                        .setVideoEncoderFactory(encoderFactory)
+                        .setVideoDecoderFactory(decoderFactory)
+                        .createPeerConnectionFactory()
+
+                rootEglBase = sharedEgl
+                peerConnectionFactory = factory
+
+            } catch (e: Exception) {
+                sharedEgl.release()
+                throw e
+            }
         }
     }
 
     fun getFactory(): PeerConnectionFactory? {
         return peerConnectionFactory
+    }
+
+    fun getEglBaseContext(): EglBase.Context? {
+        return rootEglBase?.eglBaseContext
     }
 
     fun createPeerConnection(
@@ -113,11 +136,13 @@ object WebRtcManager {
 
                     val urls = when (urlsValue) {
                         is String -> listOf(urlsValue)
+
                         is org.json.JSONArray -> {
                             (0 until urlsValue.length()).map {
                                 urlsValue.getString(it)
                             }
                         }
+
                         else -> emptyList()
                     }
 
@@ -141,12 +166,16 @@ object WebRtcManager {
                 }
 
                 if (iceServers.isEmpty()) {
-                    throw Exception("TURN Worker tidak mengirim ICE server")
+                    throw Exception(
+                        "TURN Worker tidak mengirim ICE server"
+                    )
                 }
 
                 val factory =
                     peerConnectionFactory
-                        ?: throw Exception("WebRTC belum diinisialisasi")
+                        ?: throw Exception(
+                            "WebRTC belum diinisialisasi"
+                        )
 
                 val configuration =
                     PeerConnection.RTCConfiguration(iceServers).apply {
@@ -169,10 +198,15 @@ object WebRtcManager {
                     }
 
                 val peerConnection =
-                    factory.createPeerConnection(configuration, observer)
+                    factory.createPeerConnection(
+                        configuration,
+                        observer
+                    )
 
                 if (peerConnection == null) {
-                    throw Exception("Gagal membuat PeerConnection")
+                    throw Exception(
+                        "Gagal membuat PeerConnection"
+                    )
                 }
 
                 mainHandler.post {
@@ -194,6 +228,9 @@ object WebRtcManager {
         synchronized(lock) {
             peerConnectionFactory?.dispose()
             peerConnectionFactory = null
+
+            rootEglBase?.release()
+            rootEglBase = null
         }
     }
 }
