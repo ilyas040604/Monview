@@ -5,24 +5,27 @@ import org.webrtc.JavaI420Buffer
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Efek night vision pada HP pemantau.
- * Mengubah video menjadi hitam putih dan meningkatkan kecerahan.
- * Bukan night vision inframerah.
- */
 class NightVisionVideoSink(
-    private val output: VideoSink
+    private val output: VideoSink,
+    private val onFirstFrame: () -> Unit = {}
 ) : VideoSink {
 
     @Volatile
     private var nightVisionEnabled = false
+
+    private val firstFrameReported = AtomicBoolean(false)
 
     fun setNightVisionEnabled(enabled: Boolean) {
         nightVisionEnabled = enabled
     }
 
     override fun onFrame(frame: VideoFrame) {
+        if (firstFrameReported.compareAndSet(false, true)) {
+            onFirstFrame()
+        }
+
         if (!nightVisionEnabled) {
             output.onFrame(frame)
             return
@@ -37,26 +40,19 @@ class NightVisionVideoSink(
             outputBuffer = JavaI420Buffer.allocate(width, height)
 
             enhanceLuma(
-                input.dataY,
-                input.strideY,
-                outputBuffer.dataY,
-                outputBuffer.strideY,
-                width,
-                height
+                input.dataY, input.strideY,
+                outputBuffer.dataY, outputBuffer.strideY,
+                width, height
             )
 
             fillNeutralChroma(
-                outputBuffer.dataU,
-                outputBuffer.strideU,
-                (width + 1) / 2,
-                (height + 1) / 2
+                outputBuffer.dataU, outputBuffer.strideU,
+                (width + 1) / 2, (height + 1) / 2
             )
 
             fillNeutralChroma(
-                outputBuffer.dataV,
-                outputBuffer.strideV,
-                (width + 1) / 2,
-                (height + 1) / 2
+                outputBuffer.dataV, outputBuffer.strideV,
+                (width + 1) / 2, (height + 1) / 2
             )
 
             val processed = VideoFrame(
@@ -86,19 +82,17 @@ class NightVisionVideoSink(
         height: Int
     ) {
         for (row in 0 until height) {
-            val sourceRow = row * sourceStride
-            val destinationRow = row * destinationStride
-
             for (column in 0 until width) {
-                val sample =
-                    source.get(sourceRow + column).toInt() and 0xFF
+                val sample = source.get(
+                    row * sourceStride + column
+                ).toInt() and 0xFF
 
                 val enhanced = (((sample - 16) * 1.30f) + 28f)
                     .toInt()
                     .coerceIn(16, 235)
 
                 destination.put(
-                    destinationRow + column,
+                    row * destinationStride + column,
                     enhanced.toByte()
                 )
             }
@@ -112,10 +106,8 @@ class NightVisionVideoSink(
         height: Int
     ) {
         for (row in 0 until height) {
-            val rowStart = row * stride
-
             for (column in 0 until width) {
-                plane.put(rowStart + column, 128.toByte())
+                plane.put(row * stride + column, 128.toByte())
             }
         }
     }
