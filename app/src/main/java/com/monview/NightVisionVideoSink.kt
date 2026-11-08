@@ -1,4 +1,3 @@
-
 package com.monview
 
 import org.webrtc.JavaI420Buffer
@@ -21,6 +20,10 @@ class NightVisionVideoSink(
         nightVisionEnabled = enabled
     }
 
+    fun resetFirstFrameReported() {
+        firstFrameReported.set(false)
+    }
+
     override fun onFrame(frame: VideoFrame) {
         if (firstFrameReported.compareAndSet(false, true)) {
             onFirstFrame()
@@ -31,7 +34,11 @@ class NightVisionVideoSink(
             return
         }
 
-        val input = frame.buffer.toI420() ?: return
+        val input = frame.buffer.toI420() ?: run {
+            output.onFrame(frame)
+            return
+        }
+
         var outputBuffer: JavaI420Buffer? = null
 
         try {
