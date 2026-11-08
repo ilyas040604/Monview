@@ -1,4 +1,3 @@
-```kotlin
 package com.monview
 
 import android.Manifest
@@ -443,7 +442,12 @@ class MainActivity : ComponentActivity() {
             LinearLayout.LayoutParams(0, dp(48), 1f).apply {
                 marginStart = dp(6)
             }
-        )            setPadding(0, dp(10), 0, 0)
+        )
+
+        val secondRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, 0)
         }
 
         nightVisionButton = makeControlButton("NIGHT VISION MATI") {
@@ -941,7 +945,9 @@ class MainActivity : ComponentActivity() {
                 session.startViewer()
             }
         }
-    }    private fun clearViewerMedia() {
+    }
+
+    private fun clearViewerMedia() {
         val oldSession = webRtcSession
         webRtcSession = null
         activeAttemptId = null
