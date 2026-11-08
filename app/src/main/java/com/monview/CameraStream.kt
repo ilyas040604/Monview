@@ -14,7 +14,10 @@ import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 
-class CameraStream(private val context: Context) {
+class CameraStream(
+    private val context: Context,
+    private val onStatus: (String) -> Unit = {}
+) {
 
     private var capturer: CameraVideoCapturer? = null
     private var videoSource: VideoSource? = null
@@ -27,8 +30,41 @@ class CameraStream(private val context: Context) {
     var audioTrack: AudioTrack? = null
         private set
 
+    var lastError: String? = null
+        private set
+
+    private val cameraEvents = object : CameraVideoCapturer.CameraEventsHandler {
+
+        override fun onCameraError(errorDescription: String) {
+            lastError = errorDescription
+            onStatus("ERROR KAMERA: $errorDescription")
+        }
+
+        override fun onCameraDisconnected() {
+            onStatus("KAMERA TERPUTUS")
+        }
+
+        override fun onCameraFreezed(errorDescription: String) {
+            onStatus("KAMERA MACET: $errorDescription")
+        }
+
+        override fun onCameraOpening(cameraName: String) {
+            onStatus("MEMBUKA KAMERA: $cameraName")
+        }
+
+        override fun onFirstFrameAvailable() {
+            onStatus("FRAME VIDEO PERTAMA BERHASIL DITERIMA")
+        }
+
+        override fun onCameraClosed() {
+            onStatus("KAMERA DITUTUP")
+        }
+    }
+
     fun start(): Boolean {
         if (videoTrack != null && audioTrack != null) return true
+
+        lastError = null
 
         val cameraPermission = ContextCompat.checkSelfPermission(
             context,
@@ -40,33 +76,35 @@ class CameraStream(private val context: Context) {
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
-        if (!cameraPermission || !audioPermission) return false
+        if (!cameraPermission || !audioPermission) {
+            return fail("IZIN KAMERA ATAU MIKROFON BELUM DIBERIKAN")
+        }
 
         return try {
             WebRtcManager.initialize(context)
 
             val factory = WebRtcManager.getFactory()
-                ?: return false
+                ?: return fail("WEBRTC FACTORY TIDAK TERSEDIA")
 
             val eglContext = WebRtcManager.getEglBaseContext()
-                ?: return false
+                ?: return fail("EGL CONTEXT TIDAK TERSEDIA")
 
             val enumerator = Camera2Enumerator(context)
 
             val cameraName = enumerator.deviceNames.firstOrNull {
                 enumerator.isFrontFacing(it)
             } ?: enumerator.deviceNames.firstOrNull()
-                ?: return false
+                ?: return fail("HP TIDAK MENEMUKAN KAMERA")
 
-            val camera = enumerator.createCapturer(cameraName, null)
-                ?: return false
+            val camera = enumerator.createCapturer(
+                cameraName,
+                cameraEvents
+            ) ?: return fail("GAGAL MEMBUAT CAMERA CAPTURER")
 
             val helper = SurfaceTextureHelper.create(
                 "MonViewCameraThread",
                 eglContext
-            ) ?: throw IllegalStateException(
-                "Gagal menyiapkan kamera"
-            )
+            ) ?: return fail("GAGAL MEMBUAT SURFACE TEXTURE HELPER")
 
             val video = factory.createVideoSource(false)
 
@@ -99,12 +137,19 @@ class CameraStream(private val context: Context) {
             videoTrack = videoMediaTrack
             audioTrack = audioMediaTrack
 
+            onStatus("CAPTURE KAMERA DIMULAI")
             true
 
-        } catch (_: Exception) {
-            stop()
-            false
+        } catch (e: Exception) {
+            fail("GAGAL MEMULAI KAMERA: ${e.message}")
         }
+    }
+
+    private fun fail(message: String): Boolean {
+        lastError = message
+        onStatus(message)
+        stop()
+        return false
     }
 
     fun switchCamera(onResult: (Boolean, String) -> Unit) {
@@ -118,9 +163,7 @@ class CameraStream(private val context: Context) {
         activeCapturer.switchCamera(
             object : CameraVideoCapturer.CameraSwitchHandler {
 
-                override fun onCameraSwitchDone(
-                    isFrontCamera: Boolean
-                ) {
+                override fun onCameraSwitchDone(isFrontCamera: Boolean) {
                     onResult(
                         true,
                         if (isFrontCamera) {
