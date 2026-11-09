@@ -1,4 +1,3 @@
-
 package com.monview
 
 import android.app.Notification
@@ -11,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.google.firebase.database.ValueEventListener
 
@@ -23,6 +23,7 @@ class MonitorService : Service() {
 
         private const val CHANNEL_ID = "monview_camera_service"
         private const val NOTIFICATION_ID = 41
+        private const val TAG = "MonViewCameraService"
     }
 
     inner class LocalBinder : Binder() {
@@ -41,7 +42,12 @@ class MonitorService : Service() {
     private var activeAttemptId: String? = null
     private var expectedViewerUid: String? = null
 
+    @Volatile
     private var running = false
+
+    @Volatile
+    private var starting = false
+
     private var firstSwitchValueReceived = false
     private var lastCameraSwitchRequest = 0L
 
@@ -50,17 +56,23 @@ class MonitorService : Service() {
         createNotificationChannel()
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder {
+        return binder
+    }
 
     override fun onStartCommand(
         intent: Intent?,
         flags: Int,
         startId: Int
     ): Int {
+
         when (intent?.action) {
+
             ACTION_START -> {
                 val code = intent.getStringExtra("session_code")
+
                 if (code.isNullOrBlank()) {
+                    Log.e(TAG, "Kode sesi kosong")
                     stopSelf()
                 } else {
                     startCameraService(code)
@@ -73,7 +85,9 @@ class MonitorService : Service() {
                 stopSelf()
             }
 
-            ACTION_SWITCH -> switchCamera()
+            ACTION_SWITCH -> {
+                switchCamera()
+            }
         }
 
         return START_NOT_STICKY
@@ -81,6 +95,7 @@ class MonitorService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "MonView Kamera Aktif",
@@ -94,7 +109,10 @@ class MonitorService : Service() {
         }
     }
 
-    private fun createNotification(message: String): Notification {
+    private fun createNotification(
+        message: String
+    ): Notification {
+
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("MonView — Kamera")
             .setContentText(message)
@@ -106,19 +124,40 @@ class MonitorService : Service() {
     private fun updateStatus(message: String) {
         val code = activeCode ?: return
 
-        getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, createNotification(message))
+        try {
+            getSystemService(NotificationManager::class.java)
+                .notify(
+                    NOTIFICATION_ID,
+                    createNotification(message)
+                )
+        } catch (e: Exception) {
+            Log.e(TAG, "Gagal memperbarui notifikasi", e)
+        }
 
         WebRtcSignaling.sendCameraStatus(code, message)
+
+        Log.i(TAG, message)
     }
 
     private fun startCameraService(code: String) {
-        if (running && activeCode == code) {
+
+        // Mencegah layanan yang sama dimulai berulang kali.
+        if (activeCode == code && running) {
             updateStatus("KAMERA AKTIF DI LATAR BELAKANG")
             return
         }
 
+        if (activeCode == code && starting) {
+            updateStatus("KAMERA SEDANG DISIAPKAN")
+            return
+        }
+
+        // Bersihkan layanan lama sebelum membuat sesi baru.
         stopCameraService()
+
+        starting = true
+        running = false
+        activeCode = code
 
         val cameraPermission =
             ContextCompat.checkSelfPermission(
@@ -133,41 +172,54 @@ class MonitorService : Service() {
             ) == PackageManager.PERMISSION_GRANTED
 
         if (!cameraPermission || !audioPermission) {
-            activeCode = code
-            updateStatus("IZIN KAMERA ATAU MIKROFON BELUM DIBERIKAN")
+            updateStatus(
+                "IZIN KAMERA ATAU MIKROFON BELUM DIBERIKAN"
+            )
+
+            stopCameraService()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
 
         try {
+
+            // Aktifkan foreground service sebelum memulai kamera.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+
                 startForeground(
                     NOTIFICATION_ID,
                     createNotification("Menyiapkan kamera..."),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 )
+
             } else {
+
                 startForeground(
                     NOTIFICATION_ID,
                     createNotification("Menyiapkan kamera...")
                 )
             }
 
-            activeCode = code
-            updateStatus("MENYIAPKAN KAMERA DAN MIKROFON...")
+            updateStatus(
+                "MENYIAPKAN KAMERA DAN MIKROFON..."
+            )
 
-            // Laporkan setiap status langsung dari CameraStream.
+            // Membuat stream kamera dan audio.
             val stream = CameraStream(applicationContext) { message ->
                 updateStatus(message)
             }
 
             if (!stream.start()) {
+
                 updateStatus(
-                    stream.lastError ?: "GAGAL MENYALAKAN KAMERA"
+                    stream.lastError
+                        ?: "GAGAL MENYALAKAN KAMERA"
                 )
+
                 stream.stop()
+
                 stopCameraService()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -176,6 +228,7 @@ class MonitorService : Service() {
 
             cameraStream = stream
 
+            // Periksa pairing kamera yang telah disimpan.
             val pairing = PairingStore.get(this)
 
             if (
@@ -184,7 +237,11 @@ class MonitorService : Service() {
                 pairing.pairId != code ||
                 pairing.peerUid.isBlank()
             ) {
-                updateStatus("DATA PAIRING KAMERA TIDAK DITEMUKAN")
+
+                updateStatus(
+                    "DATA PAIRING KAMERA TIDAK DITEMUKAN"
+                )
+
                 stopCameraService()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -193,14 +250,46 @@ class MonitorService : Service() {
 
             expectedViewerUid = pairing.peerUid
 
-            listenForCameraSwitch(code)
-            listenForConnection(code, pairing.peerUid)
+            /*
+             * PENTING:
+             *
+             * Status running harus aktif SEBELUM listener Firebase
+             * dipasang. Dengan begitu, permintaan koneksi pertama
+             * tidak terlewat oleh pemeriksaan status layanan.
+             */
 
             running = true
-            updateStatus("KAMERA AKTIF — MENUNGGU PEMANTAU")
+            starting = false
+
+            updateStatus(
+                "KAMERA AKTIF — MENUNGGU PEMANTAU"
+            )
+
+            // Pasang listener setelah kamera benar-benar siap.
+            listenForCameraSwitch(code)
+
+            listenForConnection(
+                code,
+                pairing.peerUid
+            )
+
+            Log.i(
+                TAG,
+                "LAYANAN KAMERA SIAP UNTUK KODE SESI"
+            )
 
         } catch (e: Exception) {
-            updateStatus("LAYANAN KAMERA GAGAL: ${e.message}")
+
+            Log.e(
+                TAG,
+                "GAGAL MEMULAI LAYANAN KAMERA",
+                e
+            )
+
+            updateStatus(
+                "LAYANAN KAMERA GAGAL: ${e.message}"
+            )
+
             stopCameraService()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -211,8 +300,12 @@ class MonitorService : Service() {
         code: String,
         viewerUid: String
     ) {
+
         activeConnectionListener?.let {
-            WebRtcSignaling.removeActiveConnectionListener(code, it)
+            WebRtcSignaling.removeActiveConnectionListener(
+                code,
+                it
+            )
         }
 
         activeConnectionListener =
@@ -221,19 +314,41 @@ class MonitorService : Service() {
                 viewerUid
             ) { attemptId ->
 
-                if (activeCode != code || !running) {
+                if (
+                    activeCode != code ||
+                    !running
+                ) {
                     return@listenActiveConnection
                 }
 
+                // Tidak ada permintaan koneksi aktif.
                 if (attemptId.isNullOrBlank()) {
-                    stopPeerConnection()
-                    updateStatus("MENUNGGU PERMINTAAN KONEKSI PEMANTAU")
+
+                    if (activeAttemptId != null) {
+                        stopPeerConnection()
+
+                        updateStatus(
+                            "MENUNGGU PERMINTAAN KONEKSI PEMANTAU"
+                        )
+                    }
+
                     return@listenActiveConnection
                 }
 
-                if (attemptId == activeAttemptId) return@listenActiveConnection
+                // Jangan membuat koneksi dua kali untuk attempt yang sama.
+                if (attemptId == activeAttemptId) {
+                    return@listenActiveConnection
+                }
 
-                startPeerConnection(code, attemptId)
+                Log.i(
+                    TAG,
+                    "PERMINTAAN KONEKSI BARU DITERIMA"
+                )
+
+                startPeerConnection(
+                    code,
+                    attemptId
+                )
             }
     }
 
@@ -241,13 +356,24 @@ class MonitorService : Service() {
         code: String,
         attemptId: String
     ) {
-        if (activeCode != code || !running) return
+
+        if (
+            activeCode != code ||
+            !running
+        ) {
+            return
+        }
 
         stopPeerConnection()
+
         activeAttemptId = attemptId
-        updateStatus("MEMBUAT KONEKSI WEBRTC...")
+
+        updateStatus(
+            "MEMBUAT KONEKSI WEBRTC..."
+        )
 
         try {
+
             val stream = cameraStream
 
             if (
@@ -255,7 +381,11 @@ class MonitorService : Service() {
                 stream.videoTrack == null ||
                 stream.audioTrack == null
             ) {
-                updateStatus("TRACK KAMERA ATAU MIKROFON TIDAK TERSEDIA")
+
+                updateStatus(
+                    "TRACK KAMERA ATAU MIKROFON TIDAK TERSEDIA"
+                )
+
                 return
             }
 
@@ -263,36 +393,70 @@ class MonitorService : Service() {
                 code = code,
                 attemptId = attemptId,
                 isCamera = true,
+
                 onRemoteTrack = {},
+
                 onStatus = { message ->
+
                     if (
                         activeCode == code &&
-                        activeAttemptId == attemptId
+                        activeAttemptId == attemptId &&
+                        running
                     ) {
                         updateStatus(message)
                     }
                 },
+
                 onRemoteAudioTrack = {}
             )
 
             webRtcSession = session
+
             session.startCamera(stream)
 
         } catch (e: Exception) {
-            updateStatus("GAGAL MEMULAI WEBRTC: ${e.message}")
+
+            Log.e(
+                TAG,
+                "WEBRTC CAMERA ERROR",
+                e
+            )
+
+            updateStatus(
+                "GAGAL MEMULAI WEBRTC: ${e.message}"
+            )
+
             stopPeerConnection()
         }
     }
 
     private fun stopPeerConnection() {
-        webRtcSession?.stop()
+
+        val session = webRtcSession
+
         webRtcSession = null
         activeAttemptId = null
+
+        try {
+            session?.stop()
+        } catch (e: Exception) {
+            Log.e(
+                TAG,
+                "GAGAL MENGHENTIKAN PEER CONNECTION",
+                e
+            )
+        }
     }
 
-    private fun listenForCameraSwitch(code: String) {
+    private fun listenForCameraSwitch(
+        code: String
+    ) {
+
         cameraSwitchListener?.let {
-            WebRtcSignaling.removeCameraSwitchListener(code, it)
+            WebRtcSignaling.removeCameraSwitchListener(
+                code,
+                it
+            )
         }
 
         firstSwitchValueReceived = false
@@ -301,32 +465,55 @@ class MonitorService : Service() {
         cameraSwitchListener =
             WebRtcSignaling.listenCameraSwitch(code) { requestAt ->
 
-                if (activeCode != code || !running) {
+                if (
+                    activeCode != code ||
+                    !running
+                ) {
                     return@listenCameraSwitch
                 }
 
+                // Abaikan nilai awal Firebase.
                 if (!firstSwitchValueReceived) {
+
                     lastCameraSwitchRequest = requestAt
                     firstSwitchValueReceived = true
+
                     return@listenCameraSwitch
                 }
 
+                // Proses hanya permintaan baru.
                 if (requestAt > lastCameraSwitchRequest) {
+
                     lastCameraSwitchRequest = requestAt
+
+                    Log.i(
+                        TAG,
+                        "PERINTAH GANTI KAMERA DITERIMA"
+                    )
+
                     switchCamera()
                 }
             }
     }
 
     fun switchCamera() {
-        val stream = cameraStream
 
-        if (stream == null) {
+        if (!running) {
             updateStatus("KAMERA BELUM AKTIF")
             return
         }
 
+        val stream = cameraStream
+
+        if (stream == null) {
+            updateStatus("CAMERA STREAM TIDAK TERSEDIA")
+            return
+        }
+
         stream.switchCamera { success, message ->
+
+            if (!running) return@switchCamera
+
             updateStatus(
                 if (success) {
                     "KAMERA BERHASIL DIGANTI: $message"
@@ -338,32 +525,69 @@ class MonitorService : Service() {
     }
 
     private fun stopCameraService() {
+
+        // Nonaktifkan status terlebih dahulu agar callback lama
+        // tidak memulai koneksi baru saat proses penghentian.
+        running = false
+        starting = false
+
         val code = activeCode
 
-        if (code != null) {
-            activeConnectionListener?.let {
-                WebRtcSignaling.removeActiveConnectionListener(code, it)
-            }
+        activeConnectionListener?.let { listener ->
 
-            cameraSwitchListener?.let {
-                WebRtcSignaling.removeCameraSwitchListener(code, it)
+            if (code != null) {
+                WebRtcSignaling.removeActiveConnectionListener(
+                    code,
+                    listener
+                )
+            }
+        }
+
+        cameraSwitchListener?.let { listener ->
+
+            if (code != null) {
+                WebRtcSignaling.removeCameraSwitchListener(
+                    code,
+                    listener
+                )
             }
         }
 
         activeConnectionListener = null
         cameraSwitchListener = null
 
+        firstSwitchValueReceived = false
+        lastCameraSwitchRequest = 0L
+
+        // Hentikan WebRTC sebelum kamera dilepas.
         stopPeerConnection()
 
-        cameraStream?.stop()
+        try {
+            cameraStream?.stop()
+        } catch (e: Exception) {
+            Log.e(
+                TAG,
+                "GAGAL MENGHENTIKAN CAMERA STREAM",
+                e
+            )
+        }
+
         cameraStream = null
 
         activeCode = null
+        activeAttemptId = null
         expectedViewerUid = null
 
-        running = false
-        firstSwitchValueReceived = false
-        lastCameraSwitchRequest = 0L
+        Log.i(
+            TAG,
+            "LAYANAN KAMERA DIHENTIKAN"
+        )
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Jangan menghentikan kamera hanya karena activity
+        // dihapus dari recent apps. Foreground service tetap berjalan.
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
