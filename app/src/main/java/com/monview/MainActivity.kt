@@ -1391,6 +1391,9 @@ class MainActivity : ComponentActivity() {
         connectionTimeoutRunnable = null
     }
 
+    // STEP 08D:
+    // Mencoba menyambung ulang tanpa batas.
+    // Jeda bertambah sampai maksimal 30 detik.
     private fun scheduleViewerReconnect(
         generation: Long = sessionGeneration
     ) {
@@ -1404,27 +1407,29 @@ class MainActivity : ComponentActivity() {
 
         clearConnectionTimeout()
         clearViewerMedia()
+
+        // Hanya menghapus penunjuk koneksi aktif.
+        // Data pairing dan data sinyal percobaan lama tidak dihapus.
         WebRtcSignaling.clearActiveConnection(code)
 
-        if (reconnectAttempts >= 4) {
-            viewerConnectionLabel.text = "● GAGAL"
-            viewerConnectionLabel.setTextColor(
-                Color.rgb(255, 110, 110)
-            )
-
-            viewerStatus.text =
-                "KONEKSI BELUM BERHASIL\n" +
-                    "Periksa internet kedua HP. " +
-                    "Jaringan tertentu memerlukan server TURN."
-
-            return
+        // Jeda bertahap:
+        // 2,5 -> 5 -> 10 -> 20 -> maksimal 30 detik.
+        val retryDelayMs = when {
+            reconnectAttempts <= 0 -> 2_500L
+            reconnectAttempts == 1 -> 5_000L
+            reconnectAttempts == 2 -> 10_000L
+            reconnectAttempts == 3 -> 20_000L
+            else -> 30_000L
         }
 
-        viewerConnectionLabel.text = "● MENYAMBUNG ULANG"
-        viewerConnectionLabel.setTextColor(mutedColor)
+        viewerConnectionLabel.text = "● MENCOBA ULANG"
+        viewerConnectionLabel.setTextColor(
+            Color.rgb(255, 180, 80)
+        )
 
         viewerStatus.text =
-            "KONEKSI TERPUTUS — MENCOBA MENYAMBUNG ULANG..."
+            "KONEKSI TERPUTUS — MENCOBA LAGI DALAM " +
+                "${retryDelayMs / 1000} DETIK..."
 
         val retry = Runnable {
             reconnectRunnable = null
@@ -1434,13 +1439,20 @@ class MainActivity : ComponentActivity() {
                 activeCode == code &&
                 !isFinishing
             ) {
-                reconnectAttempts++
+                // Nilai berhenti di 4 agar jeda tetap 30 detik.
+                // Percobaan ulang tidak dihentikan.
+                reconnectAttempts =
+                    (reconnectAttempts + 1).coerceAtMost(4)
+
                 beginViewerAttempt(code, generation)
             }
         }
 
         reconnectRunnable = retry
-        reconnectHandler.postDelayed(retry, 2_500L)
+        reconnectHandler.postDelayed(
+            retry,
+            retryDelayMs
+        )
     }
 
     private fun clearReconnectCallback() {
