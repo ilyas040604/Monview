@@ -1,14 +1,18 @@
 package com.monview
 
 import android.Manifest
+import android.app.Activity
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -57,8 +61,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioButton: Button
     private lateinit var touchLockOverlay: TextView
     private lateinit var lockButton: Button
+    private lateinit var recordButton: Button
 
     private var touchLocked = false
+    private var recordingActive = false
+    private var recordingReceiverRegistered = false
 
     private var webRtcSession: WebRtcSession? = null
     private var viewerListener: ValueEventListener? = null
@@ -77,6 +84,7 @@ class MainActivity : ComponentActivity() {
     private var audioEnabled = true
     private var reconnectAttempts = 0
     private var reconnectRunnable: Runnable? = null
+
     private val reconnectHandler = Handler(Looper.getMainLooper())
 
     private var previousAudioMode: Int? = null
@@ -87,6 +95,7 @@ class MainActivity : ComponentActivity() {
     private val scannerLauncher =
         registerForActivityResult(ScanContract()) { result ->
             val code = result.contents
+
             if (code.isNullOrBlank()) {
                 Toast.makeText(
                     this,
@@ -113,7 +122,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    // Izin ini hanya diperlukan Android 9 ke bawah.
     private val photoPermissionLauncher =
         registerForActivityResult(
             ActivityResultContracts.RequestPermission()
@@ -126,6 +134,81 @@ class MainActivity : ComponentActivity() {
                     "Izin penyimpanan diperlukan untuk menyimpan foto.",
                     Toast.LENGTH_LONG
                 ).show()
+            }
+        }
+
+    private val screenCaptureLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+
+            if (
+                result.resultCode == Activity.RESULT_OK &&
+                result.data != null
+            ) {
+                try {
+                    val serviceIntent = Intent(
+                        this,
+                        ScreenRecordingService::class.java
+                    ).apply {
+                        action = ScreenRecordingService.ACTION_START
+
+                        putExtra(
+                            ScreenRecordingService.EXTRA_RESULT_CODE,
+                            result.resultCode
+                        )
+
+                        putExtra(
+                            ScreenRecordingService.EXTRA_RESULT_DATA,
+                            result.data
+                        )
+                    }
+
+                    ContextCompat.startForegroundService(
+                        this,
+                        serviceIntent
+                    )
+
+                    viewerStatus.text = "MENYIAPKAN REKAMAN VIDEO..."
+
+                } catch (e: Exception) {
+                    updateRecordingUi(
+                        false,
+                        "GAGAL MEMULAI REKAMAN: ${e.message}"
+                    )
+                }
+
+            } else {
+                viewerStatus.text = "IZIN REKAM DIBATALKAN"
+                Toast.makeText(
+                    this,
+                    "Izin perekaman layar tidak diberikan.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+
+    private val recordingStateReceiver =
+        object : BroadcastReceiver() {
+
+            override fun onReceive(
+                context: Context?,
+                intent: Intent?
+            ) {
+                if (intent?.action != ScreenRecordingService.ACTION_STATE) {
+                    return
+                }
+
+                val active = intent.getBooleanExtra(
+                    ScreenRecordingService.EXTRA_IS_RECORDING,
+                    false
+                )
+
+                val message = intent.getStringExtra(
+                    ScreenRecordingService.EXTRA_MESSAGE
+                )
+
+                updateRecordingUi(active, message)
             }
         }
 
@@ -152,6 +235,110 @@ class MainActivity : ComponentActivity() {
         setContentView(rootFrame)
 
         restoreSavedPairing()
+    }
+
+    override fun onStart() {
+        super.onStart()
+
+        ContextCompat.registerReceiver(
+            this,
+            recordingStateReceiver,
+            IntentFilter(ScreenRecordingService.ACTION_STATE),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        recordingReceiverRegistered = true
+
+        if (::recordButton.isInitialized) {
+            updateRecordingUi(
+                ScreenRecordingService.isRecording,
+                null
+            )
+        }
+    }
+
+    override fun onStop() {
+        if (recordingReceiverRegistered) {
+            try {
+                unregisterReceiver(recordingStateReceiver)
+            } catch (_: Exception) {
+            }
+
+            recordingReceiverRegistered = false
+        }
+
+        super.onStop()
+    }
+
+    private fun updateRecordingUi(
+        active: Boolean,
+        message: String?
+    ) {
+        recordingActive = active
+
+        if (::recordButton.isInitialized) {
+            recordButton.text =
+                if (active) "STOP REKAM" else "REKAM"
+
+            recordButton.background = roundedBackground(
+                if (active) {
+                    Color.rgb(160, 42, 52)
+                } else {
+                    Color.rgb(35, 44, 55)
+                },
+                12
+            )
+        }
+
+        if (!message.isNullOrBlank() && ::viewerStatus.isInitialized) {
+            viewerStatus.text = message
+        }
+    }
+
+    private fun toggleVideoRecording() {
+        if (recordingActive || ScreenRecordingService.isRecording) {
+            stopVideoRecording()
+            return
+        }
+
+        if (remoteVideoTrack == null || nightVisionSink == null) {
+            Toast.makeText(
+                this,
+                "Video kamera belum diterima.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val manager = getSystemService(
+            Context.MEDIA_PROJECTION_SERVICE
+        ) as MediaProjectionManager
+
+        try {
+            screenCaptureLauncher.launch(
+                manager.createScreenCaptureIntent()
+            )
+        } catch (e: Exception) {
+            viewerStatus.text =
+                "GAGAL MEMBUKA IZIN REKAM: ${e.message}"
+        }
+    }
+
+    private fun stopVideoRecording() {
+        val intent = Intent(
+            this,
+            ScreenRecordingService::class.java
+        ).apply {
+            action = ScreenRecordingService.ACTION_STOP
+        }
+
+        try {
+            startService(intent)
+            viewerStatus.text = "MENGHENTIKAN REKAMAN..."
+        } catch (e: Exception) {
+            viewerStatus.text =
+                "GAGAL MENGHENTIKAN REKAMAN: ${e.message}"
+        }
     }
 
     private fun restoreSavedPairing() {
@@ -218,6 +405,7 @@ class MainActivity : ComponentActivity() {
                 setBeepEnabled(false)
                 setOrientationLocked(true)
             }
+
             scannerLauncher.launch(options)
         }
 
@@ -388,8 +576,6 @@ class MainActivity : ComponentActivity() {
             )
         )
 
-        // Overlay hanya mengunci area video.
-        // Panel status dan tombol kontrol tetap berada di atas overlay.
         touchLockOverlay = TextView(this).apply {
             text = "LAYAR TERKUNCI\nKETUK DI SINI UNTUK MEMBUKA"
             gravity = Gravity.CENTER
@@ -446,6 +632,7 @@ class MainActivity : ComponentActivity() {
             logo,
             LinearLayout.LayoutParams(0, dp(36), 1f)
         )
+
         header.addView(viewerConnectionLabel)
 
         viewerStatus = makeText(
@@ -491,6 +678,7 @@ class MainActivity : ComponentActivity() {
         audioButton = makeControlButton("SUARA AKTIF") {
             audioEnabled = !audioEnabled
             remoteAudioTrack?.setEnabled(audioEnabled)
+
             audioButton.text =
                 if (audioEnabled) "SUARA AKTIF" else "SUARA MATI"
         }
@@ -541,15 +729,10 @@ class MainActivity : ComponentActivity() {
                 }
         }
 
-        // Tombol REKAM akan diaktifkan pada STEP 06.
-        val recordButton = makeControlButton("REKAM") {
-            viewerStatus.text = "FITUR REKAM BELUM TERSEDIA"
-        }.apply {
-            isEnabled = false
-            alpha = 0.45f
+        recordButton = makeControlButton("REKAM") {
+            toggleVideoRecording()
         }
 
-        // Tombol FOTO aktif dan mengambil frame dari video WebRTC.
         val photoButton = makeControlButton("FOTO") {
             capturePhoto()
         }
@@ -614,6 +797,7 @@ class MainActivity : ComponentActivity() {
         bottomPanel.addView(firstRow, fullWidth())
         bottomPanel.addView(secondRow, fullWidth())
         bottomPanel.addView(thirdRow, fullWidth())
+
         bottomPanel.addView(
             stopButton,
             fullWidth().apply {
@@ -687,7 +871,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Mengambil foto dari frame video WebRTC yang diterima HP pemantau.
     private fun capturePhoto() {
         if (remoteVideoTrack == null || nightVisionSink == null) {
             Toast.makeText(
@@ -698,8 +881,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Android 10 ke atas menggunakan MediaStore tanpa izin ini.
-        // Android 9 ke bawah memerlukan izin penyimpanan.
         if (
             Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
             ContextCompat.checkSelfPermission(
@@ -730,7 +911,6 @@ class MainActivity : ComponentActivity() {
 
         viewerStatus.text = "MENGAMBIL FOTO..."
 
-        // Batalkan permintaan apabila tidak ada frame yang masuk dalam 5 detik.
         val timeout = Runnable {
             sink.cancelPhotoRequest()
         }
@@ -743,11 +923,13 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 if (bitmap == null) {
                     viewerStatus.text = "GAGAL MENGAMBIL FOTO"
+
                     Toast.makeText(
                         this,
                         "Frame foto tidak berhasil diproses.",
                         Toast.LENGTH_LONG
                     ).show()
+
                     return@runOnUiThread
                 }
 
@@ -1048,6 +1230,7 @@ class MainActivity : ComponentActivity() {
                             }
 
                             remoteVideoTrack = track
+
                             nightVisionSink?.let {
                                 track.addSink(it)
                             }
@@ -1057,6 +1240,7 @@ class MainActivity : ComponentActivity() {
 
                             viewerVideoStatus.text =
                                 "VIDEO: TRACK DITERIMA, MENUNGGU FRAME"
+
                             viewerVideoStatus.setTextColor(Color.YELLOW)
                         }
                     },
@@ -1142,10 +1326,10 @@ class MainActivity : ComponentActivity() {
 
     private fun clearViewerMedia() {
         val oldSession = webRtcSession
+
         webRtcSession = null
         activeAttemptId = null
 
-        // Batalkan permintaan foto jika koneksi berubah.
         nightVisionSink?.cancelPhotoRequest()
 
         remoteVideoTrack?.let { track ->
@@ -1161,7 +1345,6 @@ class MainActivity : ComponentActivity() {
 
         oldSession?.stop()
 
-        // Bersihkan gambar lama sebelum koneksi baru dimulai.
         try {
             remoteRenderer.clearImage()
         } catch (_: Exception) {
@@ -1231,8 +1414,8 @@ class MainActivity : ComponentActivity() {
 
             viewerStatus.text =
                 "KONEKSI BELUM BERHASIL\n" +
-                "Periksa internet kedua HP. " +
-                "Jaringan tertentu memerlukan server TURN."
+                    "Periksa internet kedua HP. " +
+                    "Jaringan tertentu memerlukan server TURN."
 
             return
         }
@@ -1348,6 +1531,10 @@ class MainActivity : ComponentActivity() {
         clearConnectionTimeout()
         reconnectAttempts = 0
 
+        if (recordingActive || ScreenRecordingService.isRecording) {
+            stopVideoRecording()
+        }
+
         if (code != null && viewerListener != null) {
             SessionManager.removeViewerListener(
                 code,
@@ -1409,9 +1596,11 @@ class MainActivity : ComponentActivity() {
         nightVisionSink?.setNightVisionEnabled(false)
 
         touchLocked = false
+
         if (::touchLockOverlay.isInitialized) {
             touchLockOverlay.visibility = View.GONE
         }
+
         if (::lockButton.isInitialized) {
             lockButton.text = "KUNCI SENTUH"
         }
@@ -1467,6 +1656,7 @@ class MainActivity : ComponentActivity() {
         setTextColor(whiteColor)
         background = roundedBackground(color, 14)
         setPadding(dp(12), dp(12), dp(12), dp(12))
+
         setOnClickListener {
             action()
         }
@@ -1489,6 +1679,7 @@ class MainActivity : ComponentActivity() {
             12
         )
         setPadding(dp(5), dp(5), dp(5), dp(5))
+
         setOnClickListener {
             action()
         }
