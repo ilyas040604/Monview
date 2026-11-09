@@ -113,6 +113,22 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    // Izin ini hanya diperlukan Android 9 ke bawah.
+    private val photoPermissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) {
+                capturePhotoNow()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Izin penyimpanan diperlukan untuk menyimpan foto.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -525,6 +541,7 @@ class MainActivity : ComponentActivity() {
                 }
         }
 
+        // Tombol REKAM akan diaktifkan pada STEP 06.
         val recordButton = makeControlButton("REKAM") {
             viewerStatus.text = "FITUR REKAM BELUM TERSEDIA"
         }.apply {
@@ -532,11 +549,9 @@ class MainActivity : ComponentActivity() {
             alpha = 0.45f
         }
 
+        // Tombol FOTO aktif dan mengambil frame dari video WebRTC.
         val photoButton = makeControlButton("FOTO") {
-            viewerStatus.text = "FITUR FOTO BELUM TERSEDIA"
-        }.apply {
-            isEnabled = false
-            alpha = 0.45f
+            capturePhoto()
         }
 
         secondRow.addView(
@@ -669,6 +684,100 @@ class MainActivity : ComponentActivity() {
                 } else {
                     "KUNCI SENTUH DINONAKTIFKAN"
                 }
+        }
+    }
+
+    // Mengambil foto dari frame video WebRTC yang diterima HP pemantau.
+    private fun capturePhoto() {
+        if (remoteVideoTrack == null || nightVisionSink == null) {
+            Toast.makeText(
+                this,
+                "Video kamera belum diterima. Tunggu sampai gambar tampil.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        // Android 10 ke atas menggunakan MediaStore tanpa izin ini.
+        // Android 9 ke bawah memerlukan izin penyimpanan.
+        if (
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            photoPermissionLauncher.launch(
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
+            return
+        }
+
+        capturePhotoNow()
+    }
+
+    private fun capturePhotoNow() {
+        val sink = nightVisionSink
+
+        if (sink == null || remoteVideoTrack == null) {
+            Toast.makeText(
+                this,
+                "Video kamera belum tersedia.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        viewerStatus.text = "MENGAMBIL FOTO..."
+
+        // Batalkan permintaan apabila tidak ada frame yang masuk dalam 5 detik.
+        val timeout = Runnable {
+            sink.cancelPhotoRequest()
+        }
+
+        reconnectHandler.postDelayed(timeout, 5000L)
+
+        sink.requestPhoto { bitmap ->
+            reconnectHandler.removeCallbacks(timeout)
+
+            runOnUiThread {
+                if (bitmap == null) {
+                    viewerStatus.text = "GAGAL MENGAMBIL FOTO"
+                    Toast.makeText(
+                        this,
+                        "Frame foto tidak berhasil diproses.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@runOnUiThread
+                }
+
+                val saved = try {
+                    PhotoStorage.save(this, bitmap)
+                } catch (_: Exception) {
+                    false
+                }
+
+                bitmap.recycle()
+
+                if (saved) {
+                    viewerStatus.text =
+                        "FOTO TERSIMPAN DI Pictures/MonView"
+
+                    Toast.makeText(
+                        this,
+                        "Foto berhasil disimpan di galeri.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    viewerStatus.text = "GAGAL MENYIMPAN FOTO"
+
+                    Toast.makeText(
+                        this,
+                        "Foto gagal disimpan. Periksa ruang penyimpanan.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
         }
     }
 
@@ -1036,6 +1145,9 @@ class MainActivity : ComponentActivity() {
         webRtcSession = null
         activeAttemptId = null
 
+        // Batalkan permintaan foto jika koneksi berubah.
+        nightVisionSink?.cancelPhotoRequest()
+
         remoteVideoTrack?.let { track ->
             nightVisionSink?.let {
                 track.removeSink(it)
@@ -1270,6 +1382,8 @@ class MainActivity : ComponentActivity() {
         cameraServiceStarted = false
         activeAttemptId = null
 
+        nightVisionSink?.cancelPhotoRequest()
+
         remoteVideoTrack?.let { track ->
             nightVisionSink?.let {
                 track.removeSink(it)
@@ -1429,6 +1543,8 @@ class MainActivity : ComponentActivity() {
 
         activeCode = null
         activeAttemptId = null
+
+        nightVisionSink?.cancelPhotoRequest()
 
         remoteVideoTrack?.let { track ->
             nightVisionSink?.let {
