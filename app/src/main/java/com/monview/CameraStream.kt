@@ -101,8 +101,7 @@ class CameraStream(
             val eglContext = WebRtcManager.getEglBaseContext()
                 ?: return fail("EGL CONTEXT TIDAK TERSEDIA")
 
-            // Pilih Camera2 jika didukung perangkat.
-            // Jika tidak, gunakan Camera1.
+            // Memilih Camera2 jika didukung perangkat.
             var enumerator: CameraEnumerator =
                 if (Camera2Enumerator.isSupported(context)) {
                     onStatus("MODE KAMERA: CAMERA2")
@@ -114,13 +113,15 @@ class CameraStream(
 
             var cameraNames = enumerator.deviceNames
 
-            // Jika Camera2 tidak menemukan perangkat kamera,
-            // coba enumerator Camera1 sebagai cadangan.
+            // Cadangan Camera1 jika Camera2 tidak menemukan kamera.
             if (
                 cameraNames.isEmpty() &&
                 enumerator !is Camera1Enumerator
             ) {
-                onStatus("CAMERA2 TIDAK MENEMUKAN KAMERA — COBA CAMERA1")
+                onStatus(
+                    "CAMERA2 TIDAK MENEMUKAN KAMERA — COBA CAMERA1"
+                )
+
                 enumerator = Camera1Enumerator(true)
                 cameraNames = enumerator.deviceNames
             }
@@ -129,7 +130,6 @@ class CameraStream(
                 return fail("HP TIDAK MENEMUKAN KAMERA")
             }
 
-            // Pertahankan pilihan kamera depan seperti versi sebelumnya.
             var cameraName = cameraNames.firstOrNull {
                 enumerator.isFrontFacing(it)
             } ?: cameraNames.first()
@@ -141,13 +141,14 @@ class CameraStream(
                 cameraEvents
             )
 
-            // Jika Camera2 gagal membuat capturer,
-            // coba Camera1 sebelum proses kamera dihentikan.
+            // Cadangan jika Camera2 gagal membuat capturer.
             if (
                 camera == null &&
                 enumerator !is Camera1Enumerator
             ) {
-                onStatus("CAPTURER CAMERA2 GAGAL — MENCOBA CAMERA1")
+                onStatus(
+                    "CAPTURER CAMERA2 GAGAL — MENCOBA CAMERA1"
+                )
 
                 val backupEnumerator = Camera1Enumerator(true)
                 val backupNames = backupEnumerator.deviceNames
@@ -173,7 +174,9 @@ class CameraStream(
             val helper = SurfaceTextureHelper.create(
                 "MonViewCameraThread",
                 eglContext
-            ) ?: return fail("GAGAL MEMBUAT SURFACE TEXTURE HELPER")
+            ) ?: return fail(
+                "GAGAL MEMBUAT SURFACE TEXTURE HELPER"
+            )
 
             textureHelper = helper
 
@@ -194,9 +197,14 @@ class CameraStream(
             videoMediaTrack.setEnabled(true)
             videoTrack = videoMediaTrack
 
-            // Memastikan frame benar-benar masuk ke VideoTrack.
+            // Memastikan frame video benar-benar diterima.
             val sink = VideoSink { frame: VideoFrame ->
-                if (firstTrackFrameReported.compareAndSet(false, true)) {
+                if (
+                    firstTrackFrameReported.compareAndSet(
+                        false,
+                        true
+                    )
+                ) {
                     onStatus(
                         "VIDEO TRACK MENERIMA FRAME: " +
                             "${frame.buffer.width}x${frame.buffer.height}"
@@ -207,9 +215,48 @@ class CameraStream(
             diagnosticSink = sink
             videoMediaTrack.addSink(sink)
 
-            val audio = factory.createAudioSource(
-                MediaConstraints()
+            // Pengaturan pemrosesan suara WebRTC.
+            // Menggunakan optional agar perangkat tetap bisa berjalan
+            // apabila salah satu pemrosesan tidak didukung.
+            val audioConstraints = MediaConstraints().apply {
+
+                optional.add(
+                    MediaConstraints.KeyValuePair(
+                        "googEchoCancellation",
+                        "true"
+                    )
+                )
+
+                optional.add(
+                    MediaConstraints.KeyValuePair(
+                        "googAutoGainControl",
+                        "true"
+                    )
+                )
+
+                optional.add(
+                    MediaConstraints.KeyValuePair(
+                        "googNoiseSuppression",
+                        "true"
+                    )
+                )
+
+                optional.add(
+                    MediaConstraints.KeyValuePair(
+                        "googHighpassFilter",
+                        "true"
+                    )
+                )
+            }
+
+            onStatus(
+                "AUDIO: MENGAKTIFKAN PEREDAM GEMA DAN NOISE REDUCTION"
             )
+
+            val audio = factory.createAudioSource(
+                audioConstraints
+            )
+
             audioSource = audio
 
             val audioMediaTrack = factory.createAudioTrack(
@@ -220,11 +267,16 @@ class CameraStream(
             audioMediaTrack.setEnabled(true)
             audioTrack = audioMediaTrack
 
-            onStatus("TRACK VIDEO DAN AUDIO SIAP — MEMULAI CAPTURE")
+            onStatus(
+                "TRACK VIDEO DAN AUDIO SIAP — MEMULAI CAPTURE"
+            )
 
             camera.startCapture(1280, 720, 24)
 
-            onStatus("CAPTURE DIMULAI — MENUNGGU FRAME VIDEO TRACK")
+            onStatus(
+                "CAPTURE DIMULAI — MENUNGGU FRAME VIDEO DAN AUDIO"
+            )
+
             true
 
         } catch (e: Exception) {
@@ -242,7 +294,9 @@ class CameraStream(
         return false
     }
 
-    fun switchCamera(onResult: (Boolean, String) -> Unit) {
+    fun switchCamera(
+        onResult: (Boolean, String) -> Unit
+    ) {
         val activeCapturer = capturer
 
         if (activeCapturer == null) {
@@ -253,7 +307,9 @@ class CameraStream(
         activeCapturer.switchCamera(
             object : CameraVideoCapturer.CameraSwitchHandler {
 
-                override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                override fun onCameraSwitchDone(
+                    isFrontCamera: Boolean
+                ) {
                     onResult(
                         true,
                         if (isFrontCamera) {
@@ -279,6 +335,7 @@ class CameraStream(
             }
         } catch (_: Exception) {
         }
+
         diagnosticSink = null
 
         try {
@@ -290,36 +347,42 @@ class CameraStream(
             capturer?.dispose()
         } catch (_: Exception) {
         }
+
         capturer = null
 
         try {
             videoTrack?.dispose()
         } catch (_: Exception) {
         }
+
         videoTrack = null
 
         try {
             audioTrack?.dispose()
         } catch (_: Exception) {
         }
+
         audioTrack = null
 
         try {
             videoSource?.dispose()
         } catch (_: Exception) {
         }
+
         videoSource = null
 
         try {
             audioSource?.dispose()
         } catch (_: Exception) {
         }
+
         audioSource = null
 
         try {
             textureHelper?.dispose()
         } catch (_: Exception) {
         }
+
         textureHelper = null
 
         firstTrackFrameReported.set(false)
